@@ -1,0 +1,17 @@
+{
+  "_comment": "Game configuration. Phase 4 defaults. Edit values to tune.",
+  "enemies_per_round": 8,
+  "player_lives": 3,
+  "rounds": 4,
+  "num_colors": 4,
+  "enemy_speed": 0.8,
+  "enemy_hp": 1,
+  "exp_per_kill": 1,
+  "tower_cost": 5,
+  "tower_upgrade_cost": 8,
+  "bullet_speed": 5.0,
+  "screen_width": 256,
+  "screen_height": 256,
+  "cell_size": 16,
+  "fps": 30
+}

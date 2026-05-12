@@ -1,0 +1,28 @@
+version = 1
+revision = 3
+requires-python = ">=3.10"
+
+[[package]]
+name = "pyxel"
+version = "2.9.5"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/07/1fef2588f3b560a6d76b6479e50239c0c0038579ddb3616028af4ece311e/pyxel-2.9.5-cp310-abi3-macosx_10_13_x86_64.whl", hash = "sha256:115d188166e5f26d3b1acae243155520008585d9b6bbf716aae582981eacc5ed", size = 6896373, upload-time = "2026-05-03T07:43:04.754Z" },
+    { url = "https://files.pythonhosted.org/packages/85/ec/8b775ac01395ddaf437897ec491cd193877a22e9e735bb2a1ea76853081f/pyxel-2.9.5-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:0686b25b19d8b9c19ca23da2ce9d87525b0b727abfe243fc7359cca8a51a35f1", size = 6626943, upload-time = "2026-05-03T07:43:06.471Z" },
+    { url = "https://files.pythonhosted.org/packages/73/05/e6ed0f8ab7d92df482ff6daa3b42725ac244b1cefef6f17ff8f309a81d0b/pyxel-2.9.5-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:7082e8938cd4f3416d414af5d99b3a9b95428b11e6a9d376ecbda171ad743972", size = 7130157, upload-time = "2026-05-03T07:43:07.846Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/9d/d12079d49690d44d825d5ef265077793089e328bff6a673282c2ea021cc5/pyxel-2.9.5-cp310-abi3-manylinux_2_28_armv7l.whl", hash = "sha256:805de6e52ccba799ebfa6339d32c8a002d7438b8e513fd8c73845b9ed4fff4fb", size = 7201907, upload-time = "2026-05-03T07:43:09.496Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/93/2a60327e2d915fd1fdbf9700b91ff7cd9a424fc007028c70eb5f9166dc4b/pyxel-2.9.5-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:e3095126593819bba73a45d7fffa66a172c864e950be8a04cf452d93025752cd", size = 7463672, upload-time = "2026-05-03T07:43:11.136Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/a1/9ad8cc31386f755c7828763e6610583f221cbe371ef26a40ee8c29cb618c/pyxel-2.9.5-cp310-abi3-win32.whl", hash = "sha256:f3394ca3c015095ee6383e72553189c71fd1f0d4ac73d905f5f9a167c86766db", size = 6606039, upload-time = "2026-05-03T07:43:14.306Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/9a/678f4f0abe203c90638abee7691a159a7ab5edd595f7dc75984fc5fc001b/pyxel-2.9.5-cp310-abi3-win_amd64.whl", hash = "sha256:be3d7dd0a1917517ad9bf916688a7b3714847547fe5b132b103dabfaad93d66f", size = 6834589, upload-time = "2026-05-03T07:43:12.808Z" },
+]
+
+[[package]]
+name = "zuma-tower-defense"
+version = "0.4.0"
+source = { editable = "." }
+dependencies = [
+    { name = "pyxel" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pyxel", specifier = ">=2.0" }]

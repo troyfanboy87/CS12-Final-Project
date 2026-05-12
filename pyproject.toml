@@ -1,0 +1,15 @@
+[project]
+name = "zuma-tower-defense"
+version = "0.4.0"
+description = "Zuma + Tower Defense hybrid — CS 12 25.2 Project (Phase 4)"
+requires-python = ">=3.10"
+dependencies = [
+    "pyxel>=2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
