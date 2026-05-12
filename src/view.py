@@ -171,17 +171,18 @@ class GameView:
         BUILDING state only: outline the cell under the cursor so the player
         sees exactly where a tower will land if they press T. Colored by
         whether the spot is currently legal for tower placement.
+
+        We delegate BOTH the cell-center calculation AND the legality check
+        to the controller. That guarantees the highlight always matches what
+        will actually happen when the player presses T — no drift between
+        what's drawn and what's placed.
         """
         cs = self.model.settings["cell_size"]
-        mx, my = pyxel.mouse_x, pyxel.mouse_y
-        # Snap cursor to the cell origin (top-left corner of the containing cell).
-        cell_x = (mx // cs) * cs
-        cell_y = (my // cs) * cs
-        # Legality check delegated to the controller — keeps the View free of
-        # collision math, just borrows the same predicate the controller uses
-        # when actually placing a tower.
-        cx = cell_x + cs // 2
-        cy = cell_y + cs // 2
+        # Ask the controller where the snapped cell center is, then derive
+        # the cell's top-left corner for the rectb outline.
+        cx, cy = self.controller._cursor_cell_center()
+        cell_x = int(cx - cs / 2)
+        cell_y = int(cy - cs / 2)
         legal = self.controller._is_legal_tower_spot(cx, cy)
         color = 11 if legal else 8   # green if legal, red if not
         pyxel.rectb(cell_x, cell_y, cs, cs, color)
