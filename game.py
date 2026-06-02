@@ -41,6 +41,7 @@ def main() -> None:
         fps=settings["fps"],     
         display_scale=3,
         capture_scale=1,
+        quit_key=pyxel.KEY_NONE
     )
     pyxel.mouse(True)
 
