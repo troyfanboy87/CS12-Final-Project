@@ -12,6 +12,7 @@ from .model import (
     ENEMY_RADIUS,
     GameModel,
     GameState,
+    RoundType,
     Tower,
 )
 
@@ -105,6 +106,14 @@ class InputHandler:
     def wants_start() -> bool:
         return (pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT)
                 or pyxel.btnp(pyxel.KEY_SPACE))
+    
+    @staticmethod
+    def wants_campaign_mode() -> bool:
+        return pyxel.btnp(pyxel.KEY_1)
+    
+    @staticmethod
+    def wants_endless_mode() -> bool:
+        return pyxel.btnp(pyxel.KEY_2)
 
     @staticmethod
     def fire_held() -> bool:
@@ -231,10 +240,16 @@ class GameController:
             self._update_endgame()
 
     def _update_menu(self) -> None:
-        if pyxel.btnp(pyxel.KEY_1):
-            self.settings["mode"] = "campaign"
-        elif pyxel.btnp(pyxel.KEY_2):
-            self.settings["mode"] = "endless"
+        if self.input.wants_campaign_mode():
+            self.model = GameModel(self.settings, mode_type=RoundType.CAMPAIGN)
+            self.model.start_next_round()
+            self._ensure_bgm_playing()
+
+        elif self.input.wants_endless_mode():
+            self.model = GameModel(self.settings, mode_type=RoundType.ENDLESS)
+            self.model.start_next_round()
+            self._ensure_bgm_playing()
+        
         elif pyxel.btnp(pyxel.KEY_L):
             self.model.state = GameState.LEADERBOARD
             return
@@ -248,9 +263,9 @@ class GameController:
 
     def _update_playing(self) -> None:
         if pyxel.btnp(pyxel.KEY_P):
-            self.model.state = GameState.PAUSED
+            self.model.state == GameState.PAUSED
             return
-
+        
         self.model.maybe_spawn_enemy()
 
         self._handle_aim_and_color()
@@ -260,7 +275,7 @@ class GameController:
         if self.input.fire_held() and self._shoot_cd == 0:
             self._fire_player_bullet()
             self._shoot_cd = self.SHOOT_COOLDOWN_FRAMES
-        
+
         self._handle_tower_direction_input()
 
         self._update_towers()
@@ -278,13 +293,28 @@ class GameController:
             self.model.state = GameState.GAME_OVER
             self.sound.stop_bgm()
             self._bgm_playing = False
+            self._selected_tower = None
         elif self.model.round_complete():
+            current = self.model.current_round
+
+            if not self.model.is_endless and self.model.total_rounds is not None and current >= self.model.total_rounds:
+                self.model.state = GameState.WIN
+                self.sound.stop_bgm()
+                self._bgm_playing = False
+                self._selected_tower = None
+            else:
+                self.model.end_round()
+                if not self.model.is_endless:
+                    self._selected_tower = None
+
             self.model.end_round()
 
     def _update_choose(self) -> None:
         if self.input.wants_build():
             self.model.state = GameState.BUILDING
         elif self.input.wants_next_round():
+            if not getattr(self.model, "is_endless", False):
+                self._selected_tower = None
             self.model.start_next_round()
 
     def _update_building(self) -> None:
@@ -326,7 +356,7 @@ class GameController:
         if pyxel.btnp(pyxel.KEY_P):
             self.model.state = GameState.PLAYING
 
-    def _upadte_leaderboard(self):
+    def _update_leaderboard(self):
         if pyxel.btnp(pyxel.KEY_ESCAPE):
             self.model.state = GameState.MENU
 
@@ -339,7 +369,7 @@ class GameController:
             f.write(f"{mode},{name},{score}\n")
         
         self.model.state = GameState.LEADERBOARD
-
+    
     def _load_scores(self):
         scores = []
         try: 
@@ -351,7 +381,6 @@ class GameController:
         except FileNotFoundError:
             pass
         return sorted(scores, key=lambda x: x[2], reverse = True)[:10]
-
 
     def _ensure_bgm_playing(self) -> None:
         if not self._bgm_playing:
@@ -370,13 +399,16 @@ class GameController:
         mx, my = self.input.mouse_pos()
         self.model.shooter.aim_at(mx, my)
 
-        idx = self.input.ammo_number_pressed(self.settings["num_colors"])
+        active_color = self.model.active_colors
+        idx = self.input.ammo_number_pressed(active_color)
         if idx is not None:
             self.model.shooter.set_color_index(idx)
 
         wheel = self.input.wheel_delta()
         if wheel != 0:
             self.model.shooter.cycle_color(1 if wheel > 0 else -1)
+            if self.model.shooter.color_idx >= active_color:
+                self.model.shooter.color_idx
 
     def _fire_player_bullet(self) -> None:
         speed = self.settings["bullet_speed"]
@@ -420,11 +452,18 @@ class GameController:
                 b.kill()
 
     def _update_enemies(self) -> None:
+        tunnels_allowed = self.model.round_data.tunnels > 0
+        alloc = self.model.tunnel_per_path()
         for e in self.model.enemies:
             if not e.alive and not e.escaped:
                 continue
+            
+            if e.path_index >= len(self.model.paths):
+                e.path_index = 0
+
             path = self.model.paths[e.path_index]
-            e.update(path)
+            active = path.active_tunnels(alloc[e.path_index])
+            e.update(path, tunnels_active=tunnels_allowed, active_tunnels=active)
             if e.escaped:
                 self.model.lives -= 1
                 self.sound.life_lost()
@@ -491,7 +530,7 @@ class GameController:
         self._selected_tower.color = colors[(idx + 1) % n]
 
     def _is_legal_tower_spot(self, x: float, y: float) -> bool:
-        for path in self.model.paths:
+        for path in self.model.active_paths():
             for i in range(1, len(path.waypoints)):
                 x0, y0 = path.waypoints[i - 1]
                 x1, y1 = path.waypoints[i]

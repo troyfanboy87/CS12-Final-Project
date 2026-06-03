@@ -9,6 +9,7 @@ from .model import (
     ENEMY_RADIUS,
     GameState,
     Regenerator,
+    RoundType
 )
 
 
@@ -32,7 +33,7 @@ class GameView:
     @property
     def model(self):
         return self.controller.model
-    
+
     def draw(self) -> None:
         pyxel.cls(0)
 
@@ -55,8 +56,12 @@ class GameView:
             self._draw_pause()
         elif state == GameState.LEADERBOARD:
             self._draw_leaderboard()
-        elif state in (GameState.GAME_OVER, GameState.WIN):
+        elif state == GameState.GAME_OVER:
+            self._draw_play_field()
             self._draw_game_over()
+        elif state == GameState.WIN:
+            self._draw_play_field()
+            self._draw_win()
 
     def _draw_menu(self) -> None:
         sw, sh = pyxel.width, pyxel.height
@@ -67,36 +72,32 @@ class GameView:
         pyxel.text(x,     sh // 3,     title, 10)
 
         if (pyxel.frame_count // 15) % 2 == 0:
-            prompt = "Click or SPACE to start"
-            pyxel.text(sw // 2 - len(prompt) * 2, sh // 2 + 8, prompt, 7)
+            prompt_1 = "Press [1] to start CAMPAIGN MODE"
+            prompt_2 = "Press [2] to start ENDLESS MODE"
+            pyxel.text(sw // 2 - len(prompt_1) * 2, sh // 3 + 20,      prompt_1, 11)
+            pyxel.text(sw // 2 - len(prompt_2) * 2, sh // 3 + 30, prompt_2, 12)
+
+        options = [
+            "L - Leaderboard",
+            "M - Toggle Music",
+        ]
+        for i, opt in enumerate(options):
+            pyxel.text(sw // 2 - len(opt) * 2, sh // 3 + 48 + i * 10, opt, 7)
 
         help_lines = [
             "Mouse: aim & shoot",
-            "1..5 / Wheel: change ammo color",
+            "1..5 / Wheel: change ammo color (In-Game)",
             "B: enter build phase after round",
-            "T (build): place tower",
-            "U (build): upgrade tower",
+            "T (build): place tower     U (build): upgrade tower",
             "C (build): cycle tower color",
-            "RClick / TAB: select tower",
-            "WASD: aim selected tower",
+            "RClick / TAB: select tower  WASD: aim selected",
             "SPACE: next round",
             "+ = Regenerator (heals over distance)",
             "* = Chameleon (changes color!)",
-            "Q: quit   R: restart on game over",
+            "Q: quit      R: restart on game over",
         ]
         for i, line in enumerate(help_lines):
             pyxel.text(8, sh - 8 * (len(help_lines) - i + 1), line, 6)
-
-        options = [
-            "1 - Campaign Mode",
-            "2 - Endless Mode", 
-            "L - Leaderboard",
-            "M - Toggle Music"
-        ]
-
-        for i, opt in enumerate(options):
-            pyxel.text(sw // 2 - len(opt) * 2, sh // 2 -30 + i * 10, opt, 7)
-
 
     def _draw_play_field(self) -> None:
         self._draw_grid()
@@ -107,13 +108,25 @@ class GameView:
         self._draw_shooter()
 
     def _draw_choose_overlay(self) -> None:
+        if self.model.state == GameState.BUILDING:
+            return
+        
         sw, sh = pyxel.width, pyxel.height
+
         msgs = [
             f"Round {self.model.current_round} cleared!",
             "",
-            "B - Build towers",
-            "SPACE - Next round",
         ]
+        if self.model.current_round == 2 and self.model.mode_type == RoundType.CAMPAIGN:
+            msgs.extend([
+                "NEW: Towers unlocked!",
+                "Press B to enter Build Mode",
+                "",
+            ])
+        elif self.model.towers_unlocked:
+            msgs.append(" B - Build towers")
+        msgs.append("SPACE - Next round")
+
         max_len = max(len(m) for m in msgs)
         bw = max_len * 4 + 16
         bh = len(msgs) * 8 + 12
@@ -134,20 +147,34 @@ class GameView:
                 pyxel.text(x, y, m, 7)
 
     def _draw_build_overlay(self) -> None:
-        self._draw_cursor_cell()
-
         sw, sh = pyxel.width, pyxel.height
         cost_tower   = self.model.settings["tower_cost"]
         cost_upgrade = self.model.settings["tower_upgrade_cost"]
 
+        towers_unlocked = self.model.towers_unlocked
+        upgrades_unlocked = self.model.upgrades_unlocked
+
+        if towers_unlocked:
+            self._draw_cursor_cell()
+
         msgs = [
             f"BUILD MODE — EXP: {self.model.exp}",
-            f"T: place tower ({cost_tower} EXP)",
-            f"U: upgrade selected ({cost_upgrade} EXP)",
-            "C: cycle tower color",
-            "RClick/TAB: select   WASD: aim",
-            "SPACE: start next round",
         ]
+
+        if towers_unlocked:
+            msgs.extend([f"T: place tower ({cost_tower} EXP)", 
+                        "C: cycle tower color",
+                        "RClick/TAB: select   WASD: aim"])
+        else:
+            msgs.append("T: LOCKED")
+        
+        if upgrades_unlocked:
+            msgs.append(f"U: upgrade selected ({cost_upgrade} EXP)")
+        else:
+            msgs.append("U: UPGRADES LOCKED")
+            
+        msgs.append("SPACE: start next round")
+
         max_len = max(len(m) for m in msgs)
         bw = max_len * 4 + 16
         bh = len(msgs) * 8 + 12
@@ -160,7 +187,9 @@ class GameView:
         for i, m in enumerate(msgs):
             x = sw // 2 - len(m) * 2
             y = by + 6 + i * 8
-            color = 10 if i == 0 else 7
+            
+            color = 8 if "LOCKED" in m else (10 if i == 0 else 7)
+
             pyxel.text(x + 1, y + 1, m, 0)
             pyxel.text(x,     y,     m, color)
 
@@ -176,14 +205,14 @@ class GameView:
 
     def _draw_game_over(self) -> None:
         sw, sh = pyxel.width, pyxel.height
-        pyxel.rect(0, sh // 2 - 16, sw, 32, 0)
+        pyxel.rect(0, sh // 2 - 20, sw, 50, 0)
         msg = "GAME OVER"
-        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 4, msg, 8)
+        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 12, msg, 8)
         sub = "Press R to restart"
-        pyxel.text(sw // 2 - len(sub) * 2, sh // 2 + 6, sub, 7)
+        pyxel.text(sw // 2 - len(sub) * 2, sh // 2 - 2, sub, 7)
         name = self.model.player_name
-        pyxel.text(sw // 2 - 20, sh // 2 + 20, f"Name: {name}", 7)
-        pyxel.text(sw//2 - 30, sh//2 + 30, "ENTER to submit", 6)
+        pyxel.text(sw // 2 - 20, sh // 2 + 10, f"Name: {name}", 7)
+        pyxel.text(sw // 2 - 30, sh // 2 + 20, "ENTER to submit", 6)
 
     def _draw_win(self) -> None:
         sw, sh = pyxel.width, pyxel.height
@@ -222,6 +251,7 @@ class GameView:
         pyxel.text(sw // 2 - len("PAUSED") * 2, py + 8, "PAUSED", 7)
 
         pyxel.text(sw // 2 - 30, py + 20, "P - Resume", 6)
+
     def _draw_leaderboard(self):
         sw, sh = pyxel.width, pyxel.height
         pyxel.text(sw//2 - 20, 20, "LEADERBOARD", 10)
@@ -253,19 +283,30 @@ class GameView:
         pyxel.rectb(cell_x, cell_y, cs, cs, color)
 
     def _draw_paths(self) -> None:
-        for path in self.model.paths:
+
+        active_paths = self.model.active_paths()
+        tunnel_allocation = self.model.tunnel_per_path()
+        
+        for i, path in enumerate(active_paths):
             wp = path.waypoints
-            for i in range(1, len(wp)):
-                x0, y0 = wp[i - 1]
-                x1, y1 = wp[i]
+
+            if len(wp) < 2:
+                continue
+
+            for j in range(1, len(wp)):
+                x0, y0 = wp[j - 1]
+                x1, y1 = wp[j]
                 for dx, dy in [(-1, 0), (0, 0), (1, 0), (0, -1), (0, 1)]:
                     pyxel.line(x0 + dx, y0 + dy, x1 + dx, y1 + dy, 5)
 
-            for tunnel in path.tunnels:
+            tunnel_count = tunnel_allocation[i]
+            visible_tunnels = path.active_tunnels(tunnel_count)
+
+            for tunnel in visible_tunnels:
                 self._draw_tunnel(path, tunnel)
 
-            sx, sy = wp[0]
-            ex, ey = wp[-1]
+            sx, sy = wp[0][0], wp[0][1]
+            ex, ey = wp[-1][0], wp[-1][1]
             pyxel.circb(sx, sy, 3, 11)
             pyxel.circb(ex, ey, 3, 8)
 
@@ -389,8 +430,14 @@ class GameView:
         pyxel.rect(0, 0, sw, 9, 1)
         pyxel.text(2,  2, f"LIVES:{self.model.lives}", 8)
         pyxel.text(40, 2, f"EXP:{self.model.exp}",     10)
-        pyxel.text(80, 2,
-                   f"R:{self.model.current_round}/{self.model.total_rounds}", 7)
+
+        if self.model.mode_type == RoundType.ENDLESS:
+            round_str = f"R:{self.model.current_round} (ENDLESS)"
+        else:
+            total = getattr(self.model, "total_rounds", 12)
+            round_str = f"R:{self.model.current_round}/{total}"
+            
+        pyxel.text(80, 2, round_str, 7)
 
         s = self.model.shooter
         label = f"AMMO:{s.color.upper()}"

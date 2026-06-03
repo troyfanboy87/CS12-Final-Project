@@ -1,6 +1,7 @@
 import math
 import random
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
@@ -27,6 +28,9 @@ class GameState(str, Enum):
     WIN       = "win"
     LEADERBOARD = "leaderboard"
 
+class RoundType(str, Enum):
+    CAMPAIGN = "campaign"
+    ENDLESS = "endless"
 
 class Direction(str, Enum):
     UP    = "up"
@@ -115,12 +119,15 @@ class Path:
                 return (x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
         return self.waypoints[-1]
 
-    def is_progress_in_tunnel(self, progress: float) -> bool:
-        for t in self.tunnels:
+    def active_tunnels(self, count: int) -> List[TunnelSegment]:
+        return self.tunnels[:count]
+
+    def is_progress_in_tunnel(self, progress: float, active_tunnels: List[TunnelSegment]) -> bool:
+        for t in active_tunnels:
             if t.contains(progress):
                 return True
         return False
-
+    
 
 class Entity(ABC):
     def __init__(self, x: float, y: float):
@@ -228,15 +235,20 @@ class Enemy(Entity):
             self.kill()
         return True
 
-    def update(self, path: Path) -> None:
+    def update(self, path: Path, tunnels_active: bool = True, active_tunnels: Optional[List[TunnelSegment]] = None) -> None:
         if not self.alive or self.escaped:
             return
         self.progress += self.speed
         if self.progress >= path.total_length:
             self.escaped = True
             self.kill()
+            return
         self.x, self.y = path.position_at(self.progress)
-        self.in_tunnel = path.is_progress_in_tunnel(self.progress)
+
+        if tunnels_active:
+            self.in_tunnel = path.is_progress_in_tunnel(self.progress, active_tunnels)
+        else:
+            self.in_tunnel = False
 
 
 class Regenerator(Enemy):
@@ -256,7 +268,7 @@ class Regenerator(Enemy):
         self._regen_pixel_interval: float = regen_cell_interval * cell_size
         self._next_regen_at: float = self._regen_pixel_interval
 
-    def update(self, path: Path) -> None:
+    def update(self, path: Path, tunnels_active: bool = True, active_tunnels: Optional[List[TunnelSegment]] = None) -> None:
         if not self.alive or self.escaped:
             return
         self.progress += self.speed
@@ -265,7 +277,11 @@ class Regenerator(Enemy):
             self.kill()
             return
         self.x, self.y = path.position_at(self.progress)
-        self.in_tunnel = path.is_progress_in_tunnel(self.progress)
+        
+        if tunnels_active:
+            self.in_tunnel = path.is_progress_in_tunnel(self.progress, active_tunnels)
+        else:
+            self.in_tunnel = False
 
         while self.progress >= self._next_regen_at:
             self._next_regen_at += self._regen_pixel_interval
@@ -291,7 +307,7 @@ class Chameleon(Enemy):
         self._num_colors: int = num_colors
         self._frame_counter: int = 0
 
-    def update(self, path: Path) -> None:
+    def update(self, path: Path, tunnels_active: bool = True, active_tunnels: Optional[List[TunnelSegment]] = None) -> None:
         if not self.alive or self.escaped:
             return
         self.progress += self.speed
@@ -300,7 +316,11 @@ class Chameleon(Enemy):
             self.kill()
             return
         self.x, self.y = path.position_at(self.progress)
-        self.in_tunnel = path.is_progress_in_tunnel(self.progress)
+
+        if tunnels_active:
+            self.in_tunnel = path.is_progress_in_tunnel(self.progress, active_tunnels)
+        else:
+            self.in_tunnel = False
 
         self._frame_counter += 1
         if self._frame_counter >= self._change_frames:
@@ -364,7 +384,7 @@ class EnemyFactory:
 
     def register(self, kind: str, builder: Callable[..., Enemy]) -> None:
         self._builders[kind] = builder
-
+    
     # ------------------------------------------------------------------ #
     # Phase 6a: HP scales up every 3 rounds so later enemies are tougher. #
     # Round 1-3  → base HP (1)                                            #
@@ -376,13 +396,20 @@ class EnemyFactory:
         base = self.settings["enemy_hp"]
         bonus = (current_round - 1) // 3
         return base + bonus + extra
-
+    
     def create(self, kind: str, *, color: str, path_index: int,
-               current_round: int = 1) -> Enemy:
+               current_round: int = 1, active_colors: int = 6) -> Enemy:
         if kind not in self._builders:
             raise ValueError(f"Unknown enemy kind: {kind!r}")
-        return self._builders[kind](color=color, path_index=path_index,
+
+        enemy = self._builders[kind](color=color, path_index=path_index,
                                     current_round=current_round)
+
+        if isinstance(enemy, Chameleon):
+            enemy._num_colors = active_colors
+        return enemy
+
+
 
     def _build_normal(self, *, color: str, path_index: int,
                       current_round: int = 1) -> Enemy:
@@ -441,58 +468,148 @@ class EnemyFactory:
         n = self.settings["num_colors"]
         return random.choice(COLOR_ORDER[:n])
 
+@dataclass(frozen=True, slots=True)
+class RoundData:
+    round_number: int
+    total_enemies: int
+    spawn_interval: int
+    speed_boost: float
+    active_colors: int
+    path_count: int = 1
+    tunnels: int = 0
+    unlock_towers: bool = False
+    unlock_upgrade: bool = False
+    unlock_build_ui: bool = False
+
+class GameMode(ABC):
+    @abstractmethod
+    def get_round_data(self, round_number: int, settings: dict) -> RoundData:
+        ...
+    @abstractmethod
+    def can_continue(self, round_number: int, settings: dict) -> bool: 
+        ...
+    @abstractmethod
+    def max_rounds(self) -> Optional[int]:
+        ...
+
+class CampaignMode(GameMode):
+    _ROUNDS: List[RoundData] = [
+            RoundData(1, 5, 35, 0.0, 2, 1, 0),
+            RoundData(2, 8, 32, 0.0, 3, 1, 0, True, False, True),
+            RoundData(3, 10, 32, 0.0, 3, 1, 0, True, False, True),
+            RoundData(4, 12, 32, 0.0, 4, 1, 0, True, False, True),
+            RoundData(5, 12, 30, 0.0, 4, 2, 1, True, True, True),
+            RoundData(6, 13, 30, 0.0, 5, 2, 1, True, True, True),
+            RoundData(7, 15, 30, 0.1, 5, 2, 1, True, True, True),
+            RoundData(8, 16, 28, 0.1, 5, 2, 1, True, True, True),
+            RoundData(9, 18, 28, 0.2, 6, 2, 2, True, True, True),
+            RoundData(10, 18, 25, 0.4, 6, 2, 2, True, True, True),
+            RoundData(11, 20, 25, 0.8, 6, 2, 2, True, True, True),
+            RoundData(12, 20, 25, 1.0, 6, 2, 2, True, True, True),
+        ]
+
+    def get_round_data(self, round_number: int, settings: dict) -> RoundData:
+        if round_number < 1 or round_number > len(self._ROUNDS):
+            raise IndexError("All rounds completed.")
+        return self._ROUNDS[round_number - 1]
+    
+    def can_continue(self, round_number: int, settings: dict) -> bool:
+        return round_number <= len(self._ROUNDS)
+    
+    def max_rounds(self) -> Optional[int]:
+        return len(self._ROUNDS)
+
+class EndlessMode(GameMode):
+
+    def get_round_data(self, round_number: int, settings: dict) -> RoundData:
+        return RoundData(
+            round_number=round_number,
+            total_enemies=10 + round_number * 2,
+            spawn_interval=max(8, 25 - round_number // 2),
+            speed_boost=round_number * 0.01,
+            active_colors=min(
+                2 + round_number // 3,
+                settings["num_colors"]
+            ),
+            path_count=2,
+            tunnels=2,
+            unlock_towers=True,
+            unlock_upgrade=True,
+            unlock_build_ui=True,
+        )
+ 
+    def can_continue(self, round_number: int, settings: dict) -> bool:
+        return True  # endless
+ 
+    def max_rounds(self) -> Optional[int]:
+        return None
 
 class RoundManager:
-    SPAWN_INTERVAL_FRAMES = 30
-
-    def __init__(self, settings: dict, enemy_factory: EnemyFactory):
+    def __init__(self, settings: dict, enemy_factory: EnemyFactory, game_mode: GameMode):
         self.settings = settings
-        self.factory  = enemy_factory
-        self.total_rounds: int   = settings["rounds"]
-        self.current_round: int  = 0
+        self.factory = enemy_factory
+        self.mode = game_mode
+
+        self.current_round: int = 0
         self._enemies_to_spawn: int = 0
-        self._spawn_timer: int      = 0
+        self._spawn_timer: int = 0
 
     def start_next_round(self) -> bool:
-        if self.current_round >= self.total_rounds:
+        if not self.mode.can_continue(self.current_round + 1, self.settings):
             return False
+
         self.current_round += 1
-        self._enemies_to_spawn = self.settings["enemies_per_round"]
+        round_data = self.mode.get_round_data(self.current_round, self.settings)
+
+        self._enemies_to_spawn = round_data.total_enemies
         self._spawn_timer = 0
         return True
 
     def all_rounds_finished(self) -> bool:
-        return self.current_round >= self.total_rounds
+        return not self.mode.can_continue(self.current_round + 1, self.settings)
 
     def maybe_spawn(self, num_paths: int) -> Optional[Enemy]:
         if self._enemies_to_spawn <= 0:
             return None
+
         if self._spawn_timer > 0:
             self._spawn_timer -= 1
             return None
 
-        if self.current_round <= 1 or num_paths < 2:
-            path_idx = 0
-        else:
-            path_idx = random.randint(0, num_paths - 1)
+        round_data = self.mode.get_round_data(
+            self.current_round,
+            self.settings
+        )
+        
 
-        kind  = self.factory.pick_kind(self.current_round)
-        color = self.factory.pick_color()
+        max_allowed_paths = min(num_paths, round_data.path_count)
+        path_idx = random.randint(0, max_allowed_paths - 1)
+        kind = self.factory.pick_kind(self.current_round)
+        color = random.choice(COLOR_ORDER[:round_data.active_colors])
+
         enemy = self.factory.create(kind, color=color, path_index=path_idx,
-                                    current_round=self.current_round)
+                                    current_round=self.current_round,
+                                    active_colors=round_data.active_colors)
+
+        enemy.speed += round_data.speed_boost
 
         self._enemies_to_spawn -= 1
-        self._spawn_timer = self.SPAWN_INTERVAL_FRAMES
-        return enemy
+        self._spawn_timer = round_data.spawn_interval
 
+        return enemy
+    
     def round_complete(self, live_enemies: List[Enemy]) -> bool:
-        return (self._enemies_to_spawn == 0
-                and not any(e.alive for e in live_enemies))
+        return (
+            self._enemies_to_spawn <= 0
+            and not any(e.alive for e in live_enemies)
+        )
 
 
 class GameModel:
-    def __init__(self, settings: dict):
+    def __init__(self, settings: dict, mode_type: RoundType = RoundType.CAMPAIGN):
         self.settings = settings
+        self.mode_type = mode_type
+        self.player_name: str = ""
 
         sw = settings["screen_width"]
         sh = settings["screen_height"]
@@ -522,58 +639,111 @@ class GameModel:
                 cell_size=cs,
             ),
         ]
-        self.path = self.paths[0]
 
         self.shooter = Shooter(sw // 2, sh // 2, settings["num_colors"])
 
         self.lives: int = settings["player_lives"]
         self.exp: int   = 0
         self.state: GameState = GameState.MENU
-        self.player_name: str = ""
 
         self.enemies: List[Enemy] = []
         self.bullets: List[Bullet] = []
         self.towers:  List[Tower]  = []
 
         self.enemy_factory = EnemyFactory(settings)
-        self.round_manager = RoundManager(settings, self.enemy_factory)
+        
+        if mode_type == RoundType.ENDLESS:
+            chosen_mode = EndlessMode()
+        else:
+            chosen_mode = CampaignMode()
+            
+        self.round_manager = RoundManager(self.settings, self.enemy_factory, chosen_mode)
 
+    @property
+    def active_colors(self) -> int:
+        return self.round_data.active_colors
+    
     @property
     def current_round(self) -> int:
         return self.round_manager.current_round
 
     @property
-    def total_rounds(self) -> int:
-        return self.round_manager.total_rounds
+    def total_rounds(self) -> Optional[int]:
+        return self.round_manager.mode.max_rounds()
+    
+    @property
+    def round_data(self) -> RoundData:
+        round_number = max(1, self.current_round)
+        return self.round_manager.mode.get_round_data(round_number, self.settings)
+    
+    @property
+    def towers_unlocked(self) -> bool:
+        return self.round_data.unlock_towers
+
+    @property
+    def upgrades_unlocked(self) -> bool:
+        return self.round_data.unlock_upgrade
+    
+    @property
+    def is_endless(self) -> bool:
+        return self.mode_type == RoundType.ENDLESS
+    
+    @property
+    def preview_next_round_data(self) -> RoundData:
+        next_round = self.current_round + 1
+        try:
+            return self.round_manager.mode.get_round_data(next_round, self.settings)
+        except (IndexError, Exception):
+            return self.round_data
 
     def start_next_round(self) -> None:
         self.enemies.clear()
         self.bullets.clear()
-        if self.settings.get("mode") == "endless":
-            # In endless mode the round counter never stops; bump enemies each round
-            self.round_manager.current_round += 1
-            self.round_manager._enemies_to_spawn = (
-                self.settings["enemies_per_round"]
-                + (self.round_manager.current_round - 1) * 5
-            )
-            self.round_manager._spawn_timer = 0
+        if self.round_manager.start_next_round():
             self.state = GameState.PLAYING
-        elif self.round_manager.start_next_round():
-            self.state = GameState.PLAYING
+            if self.shooter.color_idx >= self.round_data.active_colors:
+                self.shooter.color_idx = 0
         else:
             self.state = GameState.WIN
 
     def end_round(self) -> None:
-        if self.round_manager.all_rounds_finished():
+        if self.mode_type == RoundType.CAMPAIGN:
+            self.towers.clear()
+            self.bullets.clear()
+            self.enemies.clear()
+        if self.mode_type == RoundType.CAMPAIGN and self.round_manager.all_rounds_finished():
             self.state = GameState.WIN
         else:
             self.state = GameState.CHOOSE
 
     def maybe_spawn_enemy(self) -> None:
-        enemy = self.round_manager.maybe_spawn(len(self.paths))
+        enemy = self.round_manager.maybe_spawn(len(self.active_paths()))
         if enemy is not None:
             self.enemies.append(enemy)
+    
+    def active_paths(self) -> List[Path]:
+        if self.state == GameState.BUILDING:
+            return self.paths[:self.preview_next_round_data.path_count]
+        return self.paths[:self.round_data.path_count]
 
+    def active_tunnel_count(self) -> int:
+        return self.round_data.tunnels
+
+    def tunnel_per_path(self) -> List[int]:
+        rd = self.preview_next_round_data if self.state == GameState.BUILDING else self.round_data
+        count = rd.tunnels
+        paths = self.active_paths()
+
+        allocation = [0] * len(paths)
+
+        for i in range(len(paths)):
+            if count <= 0:
+                break
+            allocation[i] = 1
+            count -= 1
+        
+        return allocation
+    
     def round_complete(self) -> bool:
         return self.round_manager.round_complete(self.enemies)
 
@@ -584,6 +754,8 @@ class GameModel:
         return self.exp >= self.settings["tower_upgrade_cost"]
 
     def place_tower(self, x: float, y: float) -> Optional[Tower]:
+        if not self.round_data.unlock_towers:
+            return None
         if not self.can_afford_tower():
             return None
         self.exp -= self.settings["tower_cost"]
@@ -594,6 +766,8 @@ class GameModel:
         return tower
 
     def upgrade_tower(self, tower: Tower) -> bool:
+        if not self.round_data.unlock_upgrade:
+            return False
         if tower.upgraded or not self.can_afford_upgrade():
             return False
         self.exp -= self.settings["tower_upgrade_cost"]
