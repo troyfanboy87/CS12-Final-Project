@@ -365,24 +365,40 @@ class EnemyFactory:
     def register(self, kind: str, builder: Callable[..., Enemy]) -> None:
         self._builders[kind] = builder
 
-    def create(self, kind: str, *, color: str, path_index: int) -> Enemy:
+    # ------------------------------------------------------------------ #
+    # Phase 6a: HP scales up every 3 rounds so later enemies are tougher. #
+    # Round 1-3  → base HP (1)                                            #
+    # Round 4-6  → base HP + 1                                            #
+    # Round 7-9  → base HP + 2                                            #
+    # Round 10+  → base HP + 3                                            #
+    # ------------------------------------------------------------------ #
+    def _hp_for_round(self, current_round: int, extra: int = 0) -> int:
+        base = self.settings["enemy_hp"]
+        bonus = (current_round - 1) // 3
+        return base + bonus + extra
+
+    def create(self, kind: str, *, color: str, path_index: int,
+               current_round: int = 1) -> Enemy:
         if kind not in self._builders:
             raise ValueError(f"Unknown enemy kind: {kind!r}")
-        return self._builders[kind](color=color, path_index=path_index)
+        return self._builders[kind](color=color, path_index=path_index,
+                                    current_round=current_round)
 
-    def _build_normal(self, *, color: str, path_index: int) -> Enemy:
+    def _build_normal(self, *, color: str, path_index: int,
+                      current_round: int = 1) -> Enemy:
         return Enemy(
             color=color,
-            hp=self.settings["enemy_hp"],
+            hp=self._hp_for_round(current_round),
             speed=self.settings["enemy_speed"],
             exp_value=self.settings["exp_per_kill"],
             path_index=path_index,
         )
 
-    def _build_regenerator(self, *, color: str, path_index: int) -> Regenerator:
+    def _build_regenerator(self, *, color: str, path_index: int,
+                           current_round: int = 1) -> Regenerator:
         return Regenerator(
             color=color,
-            hp=self.settings["enemy_hp"] + 1,
+            hp=self._hp_for_round(current_round, extra=1),
             speed=self.settings["enemy_speed"],
             regen_cell_interval=self.settings["regen_cell_interval"],
             cell_size=self.settings["cell_size"],
@@ -390,10 +406,11 @@ class EnemyFactory:
             path_index=path_index,
         )
 
-    def _build_chameleon(self, *, color: str, path_index: int) -> Chameleon:
+    def _build_chameleon(self, *, color: str, path_index: int,
+                         current_round: int = 1) -> Chameleon:
         return Chameleon(
             color=color,
-            hp=self.settings["enemy_hp"],
+            hp=self._hp_for_round(current_round),
             speed=self.settings["enemy_speed"],
             change_frames=self.settings["chameleon_change_frames"],
             num_colors=self.settings["num_colors"],
@@ -402,14 +419,22 @@ class EnemyFactory:
         )
 
     def pick_kind(self, current_round: int) -> str:
+        # Rounds 1-3: normals only → gradually introduce specials
+        # Rounds 4-6: mix in regenerators and chameleons
+        # Rounds 7-9: heavier mix, more chameleons
+        # Rounds 10-12: max difficulty — fewest normals
         if current_round <= 1:
             pool = ["normal"] * 10
         elif current_round == 2:
             pool = ["normal"] * 7 + ["regenerator"] * 3
         elif current_round == 3:
             pool = ["normal"] * 6 + ["regenerator"] * 2 + ["chameleon"] * 2
-        else:
+        elif current_round <= 6:
             pool = ["normal"] * 4 + ["regenerator"] * 3 + ["chameleon"] * 3
+        elif current_round <= 9:
+            pool = ["normal"] * 3 + ["regenerator"] * 3 + ["chameleon"] * 4
+        else:
+            pool = ["normal"] * 2 + ["regenerator"] * 4 + ["chameleon"] * 4
         return random.choice(pool)
 
     def pick_color(self) -> str:
@@ -453,7 +478,8 @@ class RoundManager:
 
         kind  = self.factory.pick_kind(self.current_round)
         color = self.factory.pick_color()
-        enemy = self.factory.create(kind, color=color, path_index=path_idx)
+        enemy = self.factory.create(kind, color=color, path_index=path_idx,
+                                    current_round=self.current_round)
 
         self._enemies_to_spawn -= 1
         self._spawn_timer = self.SPAWN_INTERVAL_FRAMES
@@ -523,15 +549,19 @@ class GameModel:
     def start_next_round(self) -> None:
         self.enemies.clear()
         self.bullets.clear()
-        if self.round_manager.start_next_round():
+        if self.settings.get("mode") == "endless":
+            # In endless mode the round counter never stops; bump enemies each round
+            self.round_manager.current_round += 1
+            self.round_manager._enemies_to_spawn = (
+                self.settings["enemies_per_round"]
+                + (self.round_manager.current_round - 1) * 5
+            )
+            self.round_manager._spawn_timer = 0
+            self.state = GameState.PLAYING
+        elif self.round_manager.start_next_round():
             self.state = GameState.PLAYING
         else:
             self.state = GameState.WIN
-        
-        if self.settings.get("mode") == "endless":
-            self.current_round += 1
-            self._enemies_to_spawn += 5
-            return True
 
     def end_round(self) -> None:
         if self.round_manager.all_rounds_finished():
