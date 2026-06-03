@@ -240,8 +240,14 @@ class GameView:
             for x in range(0, sw, 2):
                 pyxel.pset(x, y, 1)  # dark pixels
 
+        options = [
+            "Resume [P]",
+            "Back to Menu [ESC]",
+            "Quit Game [Q]"
+        ]
+
         panel_w = 100
-        panel_h = 40
+        panel_h = 50
         px = sw // 2 - panel_w // 2
         py = sh // 2 - panel_h // 2
 
@@ -249,8 +255,9 @@ class GameView:
         pyxel.rectb(px, py, panel_w, panel_h, 7)
 
         pyxel.text(sw // 2 - len("PAUSED") * 2, py + 8, "PAUSED", 7)
-
-        pyxel.text(sw // 2 - 30, py + 20, "P - Resume", 6)
+        
+        for i, opt in enumerate(options):
+            pyxel.text(sw // 2 -  len(opt) * 2, py + 20 + i * 8, opt, 6)
 
     def _draw_leaderboard(self):
         sw, sh = pyxel.width, pyxel.height
@@ -451,3 +458,20 @@ class GameView:
             dirname = sel.direction.value.upper()
             txt = f"SEL DIR:{dirname}"
             pyxel.text(sw - len(txt) * 4 - 2, pyxel.height - 8, txt, 7)
+        
+        self._draw_music_button()
+
+    def _draw_music_button(self) -> None:
+        ON_TEXT = "[ON]"
+        OFF_TEXT = "[OFF]"
+        MUSIC_TEXT = "MUSIC <M>"
+        
+        state_text = ON_TEXT if self.controller._bgm_playing else OFF_TEXT
+        display = f"{MUSIC_TEXT}: {state_text}"
+
+        sw = pyxel.width
+        color = 11 if self.controller._bgm_playing else 8
+        pyxel.text(sw // 2 - len(display) * 2 + 45, 2, display, color)
+
+
+            

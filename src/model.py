@@ -494,18 +494,18 @@ class GameMode(ABC):
 
 class CampaignMode(GameMode):
     _ROUNDS: List[RoundData] = [
-            RoundData(1, 5, 35, 0.0, 2, 1, 0),
-            RoundData(2, 8, 32, 0.0, 3, 1, 0, True, False, True),
-            RoundData(3, 10, 32, 0.0, 3, 1, 0, True, False, True),
-            RoundData(4, 12, 32, 0.0, 4, 1, 0, True, False, True),
-            RoundData(5, 12, 30, 0.0, 4, 2, 1, True, True, True),
-            RoundData(6, 13, 30, 0.0, 5, 2, 1, True, True, True),
-            RoundData(7, 15, 30, 0.1, 5, 2, 1, True, True, True),
-            RoundData(8, 16, 28, 0.1, 5, 2, 1, True, True, True),
-            RoundData(9, 18, 28, 0.2, 6, 2, 2, True, True, True),
-            RoundData(10, 18, 25, 0.4, 6, 2, 2, True, True, True),
-            RoundData(11, 20, 25, 0.8, 6, 2, 2, True, True, True),
-            RoundData(12, 20, 25, 1.0, 6, 2, 2, True, True, True),
+            RoundData(1, 5, 40, 0.0, 2, 1, 0),
+            RoundData(2, 8, 38, 0.0, 3, 1, 0, True, False, True),
+            RoundData(3, 10, 38, 0.0, 3, 1, 0, True, False, True),
+            RoundData(4, 12, 35, 0.0, 4, 1, 0, True, False, True),
+            RoundData(5, 12, 35, 0.0, 4, 2, 1, True, True, True),
+            RoundData(6, 13, 35, 0.0, 5, 2, 1, True, True, True),
+            RoundData(7, 15, 32, 0.1, 5, 2, 1, True, True, True),
+            RoundData(8, 16, 32, 0.1, 5, 2, 1, True, True, True),
+            RoundData(9, 18, 32, 0.2, 6, 2, 2, True, True, True),
+            RoundData(10, 18, 30, 0.4, 6, 2, 2, True, True, True),
+            RoundData(11, 20, 30, 0.8, 6, 2, 2, True, True, True),
+            RoundData(12, 20, 30, 1.0, 6, 2, 2, True, True, True),
         ]
 
     def get_round_data(self, round_number: int, settings: dict) -> RoundData:
@@ -524,9 +524,9 @@ class EndlessMode(GameMode):
     def get_round_data(self, round_number: int, settings: dict) -> RoundData:
         return RoundData(
             round_number=round_number,
-            total_enemies=10 + round_number * 2,
-            spawn_interval=max(8, 25 - round_number // 2),
-            speed_boost=round_number * 0.01,
+            total_enemies=5 + round_number * 2,
+            spawn_interval=max(10, 40 - round_number // 2),
+            speed_boost=round_number * 0.001,
             active_colors=min(
                 2 + round_number // 3,
                 settings["num_colors"]

@@ -114,6 +114,18 @@ class InputHandler:
     @staticmethod
     def wants_endless_mode() -> bool:
         return pyxel.btnp(pyxel.KEY_2)
+    
+    @staticmethod
+    def wants_music() -> bool:
+        return pyxel.btnp(pyxel.KEY_M)
+    
+    @staticmethod
+    def wants_pause() -> bool:
+        return pyxel.btnp(pyxel.KEY_P)
+    
+    @staticmethod
+    def wants_back() -> bool:
+        return pyxel.btnp(pyxel.KEY_ESCAPE)
 
     @staticmethod
     def fire_held() -> bool:
@@ -222,6 +234,19 @@ class GameController:
     def update(self) -> None:
         if self.input.wants_quit():
             pyxel.quit()
+        
+        if (self.input.wants_back() and
+            self.mode.state not in (GameState.MENU, GameState.LEADERBOARD)
+            ):
+            self.model = GameModel(self.settings)
+            self.model.state = GameState.MENU
+            self.sound.stop_bgm()
+            self._bgm_playing = False
+            self._selected_tower = None
+            self._shoot_cd = 0
+        
+        if self.input.wants_music():
+            self._toggle_bgm()
 
         state = self.model.state
         if state == GameState.MENU:
@@ -254,16 +279,13 @@ class GameController:
             self.model.state = GameState.LEADERBOARD
             return
 
-        if pyxel.btnp(pyxel.KEY_M):
-            self._toggle_bgm()
-
         if self.input.wants_start():
             self.model.start_next_round()
             self._ensure_bgm_playing()
 
     def _update_playing(self) -> None:
-        if pyxel.btnp(pyxel.KEY_P):
-            self.model.state == GameState.PAUSED
+        if self.input.wants_pause():
+            self.model.state = GameState.PAUSED
             return
         
         self.model.maybe_spawn_enemy()
@@ -297,7 +319,9 @@ class GameController:
         elif self.model.round_complete():
             current = self.model.current_round
 
-            if not self.model.is_endless and self.model.total_rounds is not None and current >= self.model.total_rounds:
+            if (not self.model.is_endless and 
+                self.model.total_rounds is not None and 
+                current >= self.model.total_rounds):
                 self.model.state = GameState.WIN
                 self.sound.stop_bgm()
                 self._bgm_playing = False
@@ -306,8 +330,6 @@ class GameController:
                 self.model.end_round()
                 if not self.model.is_endless:
                     self._selected_tower = None
-
-            self.model.end_round()
 
     def _update_choose(self) -> None:
         if self.input.wants_build():
@@ -353,17 +375,17 @@ class GameController:
             self._save_score()
 
     def _update_paused(self):
-        if pyxel.btnp(pyxel.KEY_P):
+        if self.input.wants_pause():
             self.model.state = GameState.PLAYING
 
     def _update_leaderboard(self):
-        if pyxel.btnp(pyxel.KEY_ESCAPE):
+        if self.input.wants_back():
             self.model.state = GameState.MENU
 
     def _save_score(self):
         score = self.model.exp
         name = self.model.player_name or "AAA"
-        mode = self.settings.get("mode", "campaign")
+        mode = "endless" if self.model.is_endless else "campaign"
 
         with open("leaderboard.txt", "a") as f:
             f.write(f"{mode},{name},{score}\n")
@@ -407,8 +429,6 @@ class GameController:
         wheel = self.input.wheel_delta()
         if wheel != 0:
             self.model.shooter.cycle_color(1 if wheel > 0 else -1)
-            if self.model.shooter.color_idx >= active_color:
-                self.model.shooter.color_idx
 
     def _fire_player_bullet(self) -> None:
         speed = self.settings["bullet_speed"]
