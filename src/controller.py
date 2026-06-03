@@ -219,19 +219,38 @@ class GameController:
             self._update_menu()
         elif state == GameState.PLAYING:
             self._update_playing()
+        elif state == GameState.PAUSED:
+            self._update_paused()
         elif state == GameState.CHOOSE:
             self._update_choose()
         elif state == GameState.BUILDING:
             self._update_building()
+        elif state == GameState.LEADERBOARD:
+            self._update_leaderboard()
         elif state in (GameState.GAME_OVER, GameState.WIN):
             self._update_endgame()
 
     def _update_menu(self) -> None:
+        if pyxel.btnp(pyxel.KEY_1):
+            self.settings["mode"] = "campaign"
+        elif pyxel.btnp(pyxel.KEY_2):
+            self.settings["mode"] = "endless"
+        elif pyxel.btnp(pyxel.KEY_L):
+            self.model.state = GameState.LEADERBOARD
+            return
+
+        if pyxel.btnp(pyxel.KEY_M):
+            self._toggle_bgm()
+
         if self.input.wants_start():
             self.model.start_next_round()
             self._ensure_bgm_playing()
 
     def _update_playing(self) -> None:
+        if pyxel.btnp(pyxel.KEY_P):
+            self.model.state = GameState.PAUSED
+            return
+
         self.model.maybe_spawn_enemy()
 
         self._handle_aim_and_color()
@@ -241,7 +260,7 @@ class GameController:
         if self.input.fire_held() and self._shoot_cd == 0:
             self._fire_player_bullet()
             self._shoot_cd = self.SHOOT_COOLDOWN_FRAMES
-
+        
         self._handle_tower_direction_input()
 
         self._update_towers()
@@ -291,9 +310,59 @@ class GameController:
             self._bgm_playing = False
             self._selected_tower = None
             self._shoot_cd = 0
+            return 
+        
+        for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            if pyxel.btnp(getattr(pyxel, f"KEY_{c}")):
+                self.model.player_name += c
+        
+        if pyxel.btnp(pyxel.KEY_BACKSPACE):
+            self.model.player_name = self.model.player_name[:-1]
+
+        if pyxel.btnp(pyxel.KEY_RETURN):
+            self._save_score()
+
+    def _update_paused(self):
+        if pyxel.btnp(pyxel.KEY_P):
+            self.model.state = GameState.PLAYING
+
+    def _upadte_leaderboard(self):
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self.model.state = GameState.MENU
+
+    def _save_score(self):
+        score = self.model.exp
+        name = self.model.player_name or "AAA"
+        mode = self.settings.get("mode", "campaign")
+
+        with open("leaderboard.txt", "a") as f:
+            f.write(f"{mode},{name},{score}\n")
+        
+        self.model.state = GameState.LEADERBOARD
+
+    def _load_scores(self):
+        scores = []
+        try: 
+            with open("leaderboard.txt", "r") as f:
+                for line in f:
+                    mode, name, score = line.strip().split(",")
+                    scores.append((mode, name, int(score)))
+
+        except FileNotFoundError:
+            pass
+        return sorted(scores, key=lambda x: x[2], reverse = True)[:10]
+
 
     def _ensure_bgm_playing(self) -> None:
         if not self._bgm_playing:
+            self.sound.start_bgm()
+            self._bgm_playing = True
+
+    def _toggle_bgm(self):
+        if self._bgm_playing:
+            self.sound.stop_bgm()
+            self._bgm_playing = False
+        else:
             self.sound.start_bgm()
             self._bgm_playing = True
 

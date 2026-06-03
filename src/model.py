@@ -22,8 +22,10 @@ class GameState(str, Enum):
     PLAYING   = "playing"
     CHOOSE    = "choose"
     BUILDING  = "building"
+    PAUSED    = "paused"
     GAME_OVER = "game_over"
     WIN       = "win"
+    LEADERBOARD = "leaderboard"
 
 
 class Direction(str, Enum):
@@ -501,6 +503,7 @@ class GameModel:
         self.lives: int = settings["player_lives"]
         self.exp: int   = 0
         self.state: GameState = GameState.MENU
+        self.player_name: str = ""
 
         self.enemies: List[Enemy] = []
         self.bullets: List[Bullet] = []
@@ -524,6 +527,11 @@ class GameModel:
             self.state = GameState.PLAYING
         else:
             self.state = GameState.WIN
+        
+        if self.settings.get("mode") == "endless":
+            self.current_round += 1
+            self._enemies_to_spawn += 5
+            return True
 
     def end_round(self) -> None:
         if self.round_manager.all_rounds_finished():

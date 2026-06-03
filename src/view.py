@@ -32,7 +32,7 @@ class GameView:
     @property
     def model(self):
         return self.controller.model
-
+    
     def draw(self) -> None:
         pyxel.cls(0)
 
@@ -50,12 +50,13 @@ class GameView:
             self._draw_play_field()
             self._draw_build_overlay()
             self._draw_hud()
-        elif state == GameState.GAME_OVER:
+        elif state == GameState.PAUSED:
             self._draw_play_field()
+            self._draw_pause()
+        elif state == GameState.LEADERBOARD:
+            self._draw_leaderboard()
+        elif state in (GameState.GAME_OVER, GameState.WIN):
             self._draw_game_over()
-        elif state == GameState.WIN:
-            self._draw_play_field()
-            self._draw_win()
 
     def _draw_menu(self) -> None:
         sw, sh = pyxel.width, pyxel.height
@@ -85,6 +86,17 @@ class GameView:
         ]
         for i, line in enumerate(help_lines):
             pyxel.text(8, sh - 8 * (len(help_lines) - i + 1), line, 6)
+
+        options = [
+            "1 - Campaign Mode",
+            "2 - Endless Mode", 
+            "L - Leaderboard",
+            "M - Toggle Music"
+        ]
+
+        for i, opt in enumerate(options):
+            pyxel.text(sw // 2 - len(opt) * 2, sh // 2 -30 + i * 10, opt, 7)
+
 
     def _draw_play_field(self) -> None:
         self._draw_grid()
@@ -169,14 +181,57 @@ class GameView:
         pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 4, msg, 8)
         sub = "Press R to restart"
         pyxel.text(sw // 2 - len(sub) * 2, sh // 2 + 6, sub, 7)
+        name = self.model.player_name
+        pyxel.text(sw // 2 - 20, sh // 2 + 20, f"Name: {name}", 7)
+        pyxel.text(sw//2 - 30, sh//2 + 30, "ENTER to submit", 6)
 
     def _draw_win(self) -> None:
         sw, sh = pyxel.width, pyxel.height
         pyxel.rect(0, sh // 2 - 16, sw, 32, 0)
-        msg = "YOU WIN!"
-        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 4, msg, 11)
-        sub = "Press R to play again"
-        pyxel.text(sw // 2 - len(sub) * 2, sh // 2 + 6, sub, 7)
+
+        if self.model.state == GameState.WIN:
+            msg = "YOU WIN!"
+            color = 11
+        else:
+            msg = "GAME OVER"
+            color = 8
+
+        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 4, msg, color)
+
+        name = self.model.player_name
+        pyxel.text(sw // 2 - 40, sh // 2, f"Name: {name}", 7)
+
+        pyxel.text(sw // 2 - 60, sh // 2 + 10, "ENTER to submit score", 6)
+        pyxel.text(sw // 2 - 50, sh // 2 + 20, "R to restart", 6)
+
+    def _draw_pause(self):
+        sw, sh = pyxel.width, pyxel.height
+
+        for y in range(0, sh, 2):
+            for x in range(0, sw, 2):
+                pyxel.pset(x, y, 1)  # dark pixels
+
+        panel_w = 100
+        panel_h = 40
+        px = sw // 2 - panel_w // 2
+        py = sh // 2 - panel_h // 2
+
+        pyxel.rect(px, py, panel_w, panel_h, 0)
+        pyxel.rectb(px, py, panel_w, panel_h, 7)
+
+        pyxel.text(sw // 2 - len("PAUSED") * 2, py + 8, "PAUSED", 7)
+
+        pyxel.text(sw // 2 - 30, py + 20, "P - Resume", 6)
+    def _draw_leaderboard(self):
+        sw, sh = pyxel.width, pyxel.height
+        pyxel.text(sw//2 - 20, 20, "LEADERBOARD", 10)
+
+        scores = self.controller._load_scores()
+
+        for i, (mode, name, score) in enumerate(scores):
+            line = f"{i+1}. {name} ({mode}) - {score}"
+            pyxel.text(sw//2 - len(line)*2, 40 + i*10, line, 7)
+        pyxel.text(10, sh - 10, "ESC to return", 6)
 
     def _draw_grid(self) -> None:
         cs = self.model.settings["cell_size"]
