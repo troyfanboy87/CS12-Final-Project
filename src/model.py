@@ -1,856 +1,744 @@
 import math
-import random
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from enum import Enum
-from typing import Callable, Dict, List, Optional, Protocol, Tuple
+import pyxel
+
+from .model import (
+    BombBullet,
+    BurstTower,
+    Chameleon,
+    COLOR_ORDER,
+    COLOR_PALETTE,
+    DIRECTION_VECTORS,
+    ENEMY_RADIUS,
+    GameState,
+    Ghost,
+    Regenerator,
+    RoundType,
+    Saboteur,
+    SlowTower,
+    SniperBullet,
+    SHOP_ITEMS,
+)
 
 
-COLOR_PALETTE: Dict[str, int] = {
-    "red":    8,
-    "green":  11,
-    "blue":   12,
-    "yellow": 10,
-    "purple": 2,
-    "orange": 9,
-}
+class GameView:
 
-COLOR_ORDER: List[str] = ["red", "green", "blue", "yellow", "purple", "orange"]
+    def __init__(self, controller):
+        self.controller = controller
 
-
-class GameState(str, Enum):
-    MENU      = "menu"
-    PLAYING   = "playing"
-    CHOOSE    = "choose"
-    BUILDING  = "building"
-    PAUSED    = "paused"
-    GAME_OVER = "game_over"
-    WIN       = "win"
-    LEADERBOARD = "leaderboard"
-
-class RoundType(str, Enum):
-    CAMPAIGN = "campaign"
-    ENDLESS = "endless"
-
-class Direction(str, Enum):
-    UP    = "up"
-    DOWN  = "down"
-    LEFT  = "left"
-    RIGHT = "right"
-
-
-DIRECTION_VECTORS: Dict[Direction, Tuple[int, int]] = {
-    Direction.UP:    (0, -1),
-    Direction.DOWN:  (0,  1),
-    Direction.LEFT:  (-1, 0),
-    Direction.RIGHT: (1,  0),
-}
-
-
-ENEMY_RADIUS:  int = 5
-BULLET_RADIUS: int = 2
-TOWER_HALF:    int = 5
-SHOOTER_HALF:  int = 6
-
-
-class TunnelSegment:
-    __slots__ = ("start", "end")
-
-    def __init__(self, start: float, end: float):
-        assert end > start, "tunnel must have positive length"
-        self.start = start
-        self.end   = end
+        import pathlib
+        self._sprites_loaded = False
+        _res = pathlib.Path(__file__).resolve().parent.parent / "enemies.pyxres"
+        if _res.exists():
+            try:
+                pyxel.load(str(_res), exclude_images=False,
+                           exclude_tilemaps=True, exclude_sounds=True,
+                           exclude_musics=True)
+                self._sprites_loaded = True
+            except Exception:
+                pass
 
     @property
-    def length(self) -> float:
-        return self.end - self.start
+    def model(self):
+        return self.controller.model
 
-    def contains(self, progress: float) -> bool:
-        return self.start <= progress <= self.end
+    def draw(self) -> None:
+        pyxel.cls(0)
 
+        state = self.model.state
+        if state == GameState.MENU:
+            self._draw_menu()
+        elif state == GameState.PLAYING:
+            self._draw_play_field()
+            self._draw_hud()
+        elif state == GameState.CHOOSE:
+            self._draw_play_field()
+            self._draw_choose_overlay()
+            self._draw_hud()
+        elif state == GameState.BUILDING:
+            self._draw_play_field()
+            self._draw_build_overlay()
+            self._draw_hud()
+        elif state == GameState.SHOP:
+            self._draw_play_field()
+            self._draw_shop_overlay()
+            self._draw_hud()
+        elif state == GameState.PAUSED:
+            self._draw_play_field()
+            self._draw_pause()
+        elif state == GameState.LEADERBOARD:
+            self._draw_leaderboard()
+        elif state == GameState.GAME_OVER:
+            self._draw_play_field()
+            self._draw_game_over()
+        elif state == GameState.WIN:
+            self._draw_play_field()
+            self._draw_win()
 
-class Path:
-    def __init__(
-        self,
-        waypoints: List[Tuple[int, int]],
-        tunnels_in_cells: Optional[List[Tuple[int, int]]] = None,
-        cell_size: int = 16,
-    ):
-        assert len(waypoints) >= 2, "A path needs at least 2 waypoints"
-        self.waypoints = list(waypoints)
-        self.cell_size = cell_size
+    # ── Big pixel font ────────────────────────────────────────────────────────
+    # Each letter is a 5-wide × 5-tall bitmap (list of 5 strings, '1'=on '0'=off)
+    _BIG_FONT = {
+        'Z': ["11111","00011","00110","01100","11111"],
+        'U': ["10001","10001","10001","10001","01110"],
+        'M': ["10001","11011","10101","10001","10001"],
+        'A': ["01110","10001","11111","10001","10001"],
+        ':': ["00000","00100","00000","00100","00000"],
+        'T': ["11111","00100","00100","00100","00100"],
+        'O': ["01110","10001","10001","10001","01110"],
+        'W': ["10001","10001","10101","11011","10001"],
+        'E': ["11111","10000","11110","10000","11111"],
+        'R': ["11110","10001","11110","10100","10011"],
+        'D': ["11110","10001","10001","10001","11110"],
+        'F': ["11111","10000","11110","10000","10000"],
+        'N': ["10001","11001","10101","10011","10001"],
+        'S': ["01111","10000","01110","00001","11110"],
+        ' ': ["00000","00000","00000","00000","00000"],
+    }
 
-        self.cumulative_lengths: List[float] = [0.0]
-        for i in range(1, len(self.waypoints)):
-            x0, y0 = self.waypoints[i - 1]
-            x1, y1 = self.waypoints[i]
-            seg_len = math.hypot(x1 - x0, y1 - y0)
-            self.cumulative_lengths.append(self.cumulative_lengths[-1] + seg_len)
-        self.total_length: float = self.cumulative_lengths[-1]
+    def _draw_big_text(self, text: str, x: int, y: int,
+                       color: int, scale: int = 2) -> int:
+        """Draw text using the big pixel font. Returns total width drawn."""
+        cx = x
+        for ch in text.upper():
+            bitmap = self._BIG_FONT.get(ch, self._BIG_FONT[' '])
+            for row, bits in enumerate(bitmap):
+                for col, bit in enumerate(bits):
+                    if bit == '1':
+                        pyxel.rect(cx + col * scale,
+                                   y  + row * scale,
+                                   scale, scale, color)
+            cx += (5 + 1) * scale   # 5 cols + 1 gap
+        return cx - x
 
-        self.tunnels: List[TunnelSegment] = []
-        if tunnels_in_cells:
-            assert len(tunnels_in_cells) <= 2, "Phase 4b: a path can have at most two tunnels"
-            for sc, ec in tunnels_in_cells:
-                cells = ec - sc
-                assert 2 <= cells <= 5, f"Phase 4b: each tunnel must be 2..5 cells long (got {cells})"
-                self.tunnels.append(
-                    TunnelSegment(sc * cell_size, ec * cell_size)
-                )
-            total_tunnel_len = sum(t.length for t in self.tunnels)
-            assert total_tunnel_len <= self.total_length / 2, (
-                "Phase 4b: total tunnel length must not exceed half the path "
-                f"length (got {total_tunnel_len:.1f} > {self.total_length / 2:.1f})"
-            )
+    def _draw_ghost_sprite(self, x: int, y: int,
+                           frame: int, color: int = 7) -> None:
+        """Draw a small pixelated ghost at (x,y). frame drives the bobbing."""
+        bob = 1 if (frame // 12) % 2 == 0 else 0
+        gy = y + bob
 
-    def position_at(self, progress: float) -> Tuple[float, float]:
-        if progress <= 0:
-            return self.waypoints[0]
-        if progress >= self.total_length:
-            return self.waypoints[-1]
-        for i in range(1, len(self.cumulative_lengths)):
-            if progress <= self.cumulative_lengths[i]:
-                seg_start = self.cumulative_lengths[i - 1]
-                seg_end   = self.cumulative_lengths[i]
-                seg_len   = seg_end - seg_start
-                t = (progress - seg_start) / seg_len if seg_len > 0 else 0
-                x0, y0 = self.waypoints[i - 1]
-                x1, y1 = self.waypoints[i]
-                return (x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
-        return self.waypoints[-1]
+        # Body — dome top
+        body = [
+            "01110",
+            "11111",
+            "11111",
+            "11111",
+            "11011",   # wavy bottom
+        ]
+        sc = 2
+        for row, bits in enumerate(body):
+            for col, bit in enumerate(bits):
+                if bit == '1':
+                    pyxel.rect(x + col * sc, gy + row * sc, sc, sc, color)
 
-    def active_tunnels(self, count: int) -> List[TunnelSegment]:
-        return self.tunnels[:count]
+        # Eyes — two dark pixels
+        eye_c = 0
+        pyxel.rect(x + 1 * sc, gy + 1 * sc, sc, sc, eye_c)
+        pyxel.rect(x + 3 * sc, gy + 1 * sc, sc, sc, eye_c)
 
-    def is_progress_in_tunnel(self, progress: float, active_tunnels: List[TunnelSegment]) -> bool:
-        for t in active_tunnels:
-            if t.contains(progress):
-                return True
-        return False
-    
+        # Trailing squiggle below ghost (animated)
+        trail_phase = (frame // 8) % 3
+        trail_offsets = [(0, 0), (2, -1), (4, 0), (6, -1), (8, 0)]
+        for i, (tx, ty_off) in enumerate(trail_offsets):
+            ty_val = gy + 5 * sc + ty_off * sc + (1 if (i + trail_phase) % 2 == 0 else 0)
+            pyxel.rect(x + tx, ty_val, sc, 1, color)
 
-class Entity(ABC):
-    def __init__(self, x: float, y: float):
-        self.x: float = float(x)
-        self.y: float = float(y)
-        self.alive: bool = True
+    def _draw_menu(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        fc = pyxel.frame_count
 
-    @abstractmethod
-    def update(self, *args, **kwargs) -> None:
-        ...
+        # ── Starfield — full screen, deterministic twinkle ────────────────
+        for i in range(48):
+            sx = (i * 37 + 13) % sw
+            sy = (i * 53 + 7)  % sh
+            if (fc // (4 + i % 5) + i) % 3 != 0:
+                pyxel.pset(sx, sy, 1 if i % 3 == 0 else 5)
 
-    def kill(self) -> None:
-        self.alive = False
+        # ── Layout math ───────────────────────────────────────────────────
+        scale = 2
+        char_w = (5 + 1) * scale   # 12px per char
+        line1, line2 = "ZUMA:", "TOWER DEFENSE"
+        w1 = len(line1) * char_w - scale
+        w2 = len(line2) * char_w - scale
+        line_h = 5 * scale         # 10px tall per line
 
-    def distance_to(self, other: "Entity") -> float:
-        return math.hypot(self.x - other.x, self.y - other.y)
+        # Total block height: line1 + gap4 + line2 + gap10 + panel + gap6 + music
+        panel_items = [
+            ("[1] Campaign Mode",  11),
+            ("[2] Endless Mode",   12),
+            ("[L] Leaderboard",    7),
+            ("[K] Controls",       6),
+            ("[M] Toggle Music",   6),
+        ]
+        pw = 120
+        ph = len(panel_items) * 12 + 10
+        total_h = line_h + 4 + line_h + 10 + ph + 6 + 6
+        start_y = (sh - total_h) // 2
 
+        ty1 = start_y
+        ty2 = ty1 + line_h + 4
+        py  = ty2 + line_h + 10
 
-class BulletSource(Protocol):
-    x: float
-    y: float
-    def produce_bullets(self, bullet_speed: float) -> List["Bullet"]: ...
+        # ── Title ─────────────────────────────────────────────────────────
+        c1 = 10 if (fc // 20) % 2 == 0 else 9
+        # Shadow
+        self._draw_big_text(line1, sw // 2 - w1 // 2 + 1, ty1 + 1, 1, scale)
+        self._draw_big_text(line2, sw // 2 - w2 // 2 + 1, ty2 + 1, 1, scale)
+        # Title
+        self._draw_big_text(line1, sw // 2 - w1 // 2, ty1, c1, scale)
+        self._draw_big_text(line2, sw // 2 - w2 // 2, ty2, 7,  scale)
 
+        # ── Ghosts — just left and right of "ZUMA:" on the same row ───────
+        ghost_y = ty1 - 1
+        ghost_sc = 2   # ghost body is 5*sc=10px wide
+        left_x  = sw // 2 - w1 // 2 - ghost_sc * 5 - 6
+        right_x = sw // 2 + w1 // 2 + 6
+        self._draw_ghost_sprite(left_x,  ghost_y, fc,      color=7)
+        self._draw_ghost_sprite(right_x, ghost_y, fc + 24, color=5)
 
-class Bullet(Entity):
-    def __init__(self, x: float, y: float, vx: float, vy: float, color: str):
-        super().__init__(x, y)
-        self.vx = vx
-        self.vy = vy
-        self.color = color
+        # ── Menu panel ────────────────────────────────────────────────────
+        px_panel = sw // 2 - pw // 2
+        pyxel.rect(px_panel - 1, py - 1, pw + 2, ph + 2, 1)
+        pyxel.rectb(px_panel - 1, py - 1, pw + 2, ph + 2, 5)
 
-    def update(self) -> None:
-        self.x += self.vx
-        self.y += self.vy
+        for i, (label, color) in enumerate(panel_items):
+            lx = sw // 2 - len(label) * 2
+            ly = py + 5 + i * 12
+            if i < 2 and (fc // 18) % 2 == 1:
+                continue
+            pyxel.text(lx, ly, label, color)
 
-    def is_offscreen(self, screen_w: int, screen_h: int) -> bool:
-        return (self.x < 0 or self.x > screen_w or
-                self.y < 0 or self.y > screen_h)
+        # ── Music state ───────────────────────────────────────────────────
+        music_on = self.controller._menu_bgm_playing or self.controller._bgm_playing
+        state_str = "MUSIC: ON" if music_on else "MUSIC: OFF"
+        mc = 11 if music_on else 8
+        pyxel.text(sw // 2 - len(state_str) * 2, py + ph + 6, state_str, mc)
 
+        # ── Controls overlay if toggled ───────────────────────────────────
+        if self.controller._show_controls:
+            self._draw_controls_overlay()
 
-class Shooter(Entity):
-    def __init__(self, x: float, y: float, num_colors: int):
-        super().__init__(x, y)
-        assert num_colors >= 1
-        self.num_colors = num_colors
-        self.color_idx = 0
-        self.aim_angle = -math.pi / 2
+    def _draw_controls_overlay(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        lines = [
+            ("-- SHOOTING --",        7),
+            ("Mouse: aim",            6),
+            ("Hold LClick: shoot",    6),
+            ("1-6 / Wheel: ammo",     6),
+            ("X: cycle special ammo", 6),
+            ("",                      0),
+            ("-- BUILD MODE --",      7),
+            ("T: place tower",        6),
+            ("U: upgrade tower",      6),
+            ("C: cycle color",        6),
+            ("RClick/TAB: select",    6),
+            ("WASD: aim tower",       6),
+            ("SPACE: next round",     6),
+            ("",                      0),
+            ("-- BETWEEN ROUNDS --",  7),
+            ("B: build phase",        6),
+            ("O: shop",               6),
+            ("",                      0),
+            ("-- ENEMIES --",         7),
+            ("+ Regen  * Cham",       6),
+            ("! Saboteur  ~ Ghost",   6),
+            ("",                      0),
+            ("[K] close",             5),
+        ]
+        pw = 140
+        ph = len(lines) * 7 + 10
+        ox = sw // 2 - pw // 2
+        oy = max(4, sh // 2 - ph // 2)
 
-    @property
-    def color(self) -> str:
-        return COLOR_ORDER[self.color_idx]
+        pyxel.rect(ox, oy, pw, ph, 0)
+        pyxel.rectb(ox, oy, pw, ph, 6)
 
-    def cycle_color(self, direction: int = 1) -> None:
-        self.color_idx = (self.color_idx + direction) % self.num_colors
+        for i, (text, color) in enumerate(lines):
+            if text:
+                pyxel.text(ox + 6, oy + 5 + i * 7, text, color)
 
-    def set_color_index(self, idx: int) -> None:
-        if 0 <= idx < self.num_colors:
-            self.color_idx = idx
+    def _draw_play_field(self) -> None:
+        self._draw_grid()
+        self._draw_paths()
+        self._draw_towers()
+        self._draw_hearts()
+        self._draw_enemies()
+        self._draw_bullets()
+        self._draw_shooter()
 
-    def aim_at(self, target_x: float, target_y: float) -> None:
-        dx = target_x - self.x
-        dy = target_y - self.y
-        if dx == 0 and dy == 0:
+    def _draw_choose_overlay(self) -> None:
+        if self.model.state == GameState.BUILDING:
             return
-        self.aim_angle = math.atan2(dy, dx)
-
-    def update(self) -> None:
-        pass
-
-    def produce_bullets(self, bullet_speed: float) -> List[Bullet]:
-        vx = math.cos(self.aim_angle) * bullet_speed
-        vy = math.sin(self.aim_angle) * bullet_speed
-        return [Bullet(self.x, self.y, vx, vy, self.color)]
-
-
-class Enemy(Entity):
-    KIND: str = "normal"
-
-    def __init__(
-        self,
-        color: str,
-        hp: int,
-        speed: float,
-        exp_value: int = 1,
-        path_index: int = 0,
-    ):
-        super().__init__(0.0, 0.0)
-        self.color: str = color
-        self.hp: int = hp
-        self.max_hp: int = hp
-        self.speed: float = speed
-        self.progress: float = 0.0
-        self.escaped: bool = False
-        self.exp_value: int = exp_value
-        self.path_index: int = path_index
-        self.in_tunnel: bool = False
-
-    def take_damage(self, bullet_color: str, amount: int = 1) -> bool:
-        if bullet_color != self.color:
-            return False
-        if self.in_tunnel:
-            return False
-        self.hp -= amount
-        if self.hp <= 0:
-            self.kill()
-        return True
-
-    def update(self, path: Path, tunnels_active: bool = True, active_tunnels: Optional[List[TunnelSegment]] = None) -> None:
-        if not self.alive or self.escaped:
-            return
-        self.progress += self.speed
-        if self.progress >= path.total_length:
-            self.escaped = True
-            self.kill()
-            return
-        self.x, self.y = path.position_at(self.progress)
-
-        if tunnels_active:
-            self.in_tunnel = path.is_progress_in_tunnel(self.progress, active_tunnels)
-        else:
-            self.in_tunnel = False
-
-
-class Regenerator(Enemy):
-    KIND: str = "regenerator"
-
-    def __init__(
-        self,
-        color: str,
-        hp: int,
-        speed: float,
-        regen_cell_interval: int,
-        cell_size: int,
-        exp_value: int = 1,
-        path_index: int = 0,
-    ):
-        super().__init__(color, hp, speed, exp_value, path_index)
-        self._regen_pixel_interval: float = regen_cell_interval * cell_size
-        self._next_regen_at: float = self._regen_pixel_interval
-
-    def update(self, path: Path, tunnels_active: bool = True, active_tunnels: Optional[List[TunnelSegment]] = None) -> None:
-        if not self.alive or self.escaped:
-            return
-        self.progress += self.speed
-        if self.progress >= path.total_length:
-            self.escaped = True
-            self.kill()
-            return
-        self.x, self.y = path.position_at(self.progress)
         
-        if tunnels_active:
-            self.in_tunnel = path.is_progress_in_tunnel(self.progress, active_tunnels)
-        else:
-            self.in_tunnel = False
+        sw, sh = pyxel.width, pyxel.height
 
-        while self.progress >= self._next_regen_at:
-            self._next_regen_at += self._regen_pixel_interval
-            if self.hp < self.max_hp:
-                self.hp += 1
+        msgs = [
+            f"Round {self.model.current_round} cleared!",
+            "",
+        ]
+        if self.model.current_round == 2 and self.model.mode_type == RoundType.CAMPAIGN:
+            msgs.extend([
+                "NEW: Towers unlocked!",
+                "Press B to enter Build Mode",
+                "",
+            ])
+        elif self.model.towers_unlocked:
+            msgs.append(" B - Build towers")
+        msgs.append(" O - Shop")
+        msgs.append("SPACE - Next round")
 
+        max_len = max(len(m) for m in msgs)
+        bw = max_len * 4 + 16
+        bh = len(msgs) * 8 + 12
+        bx = sw // 2 - bw // 2
+        by = sh // 2 - bh // 2
+        pyxel.rect(bx - 1, by - 1, bw + 2, bh + 2, 1)
+        pyxel.rectb(bx - 1, by - 1, bw + 2, bh + 2, 6)
+        for i, m in enumerate(msgs):
+            x = sw // 2 - len(m) * 2
+            y = by + 6 + i * 8
+            if i == 0:
+                pyxel.text(x, y, m, 10)
+            elif m.startswith("B"):
+                pyxel.text(x, y, m, 11)
+            elif m.startswith("SPACE"):
+                pyxel.text(x, y, m, 7)
+            else:
+                pyxel.text(x, y, m, 7)
 
-class Chameleon(Enemy):
-    KIND: str = "chameleon"
+    def _draw_build_overlay(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        cost_tower   = self.model.settings["tower_cost"]
+        cost_upgrade = self.model.settings["tower_upgrade_cost"]
 
-    def __init__(
-        self,
-        color: str,
-        hp: int,
-        speed: float,
-        change_frames: int,
-        num_colors: int,
-        exp_value: int = 1,
-        path_index: int = 0,
-    ):
-        super().__init__(color, hp, speed, exp_value, path_index)
-        self._change_frames: int = change_frames
-        self._num_colors: int = num_colors
-        self._frame_counter: int = 0
+        towers_unlocked = self.model.towers_unlocked
+        upgrades_unlocked = self.model.upgrades_unlocked
 
-    def update(self, path: Path, tunnels_active: bool = True, active_tunnels: Optional[List[TunnelSegment]] = None) -> None:
-        if not self.alive or self.escaped:
-            return
-        self.progress += self.speed
-        if self.progress >= path.total_length:
-            self.escaped = True
-            self.kill()
-            return
-        self.x, self.y = path.position_at(self.progress)
+        if towers_unlocked:
+            self._draw_cursor_cell()
 
-        if tunnels_active:
-            self.in_tunnel = path.is_progress_in_tunnel(self.progress, active_tunnels)
-        else:
-            self.in_tunnel = False
-
-        self._frame_counter += 1
-        if self._frame_counter >= self._change_frames:
-            self._frame_counter = 0
-            choices = [c for c in COLOR_ORDER[:self._num_colors] if c != self.color]
-            if choices:
-                self.color = random.choice(choices)
-
-
-class Ghost(Enemy):
-    KIND: str = "ghost"
-
-    def __init__(
-            self,
-            hp: int,
-            speed: float,
-            path_index: int = 0,
-    ):
-        super().__init__(
-            color="red",
-            hp=hp,
-            speed=speed,
-            exp_value= -5,
-            path_index=path_index,
-        )
-    
-    def take_damage(self, bullet_color: str, amount: int = 1) -> bool:
-        if self.in_tunnel:
-            return False
-        
-        self.hp -= amount
-
-        if self.hp <= 0:
-            self.kill()
-        
-        return True
-    
-class Heart(Entity):
-    def __init__(self, x: float, y: float, lifetime: int = 600):
-        super().__init__(x, y)
-        self.lifetime = lifetime
-    
-    def update(self) -> None:
-        self.lifetime -= 1
-        
-        if self.lifetime <= 0:
-            self.kill()
-    
-    @staticmethod
-    def max_hearts_per_round(round_number: int) -> int:
-        if round_number <= 5:
-            return 0
-        elif round_number <= 12:
-            return 1
-        else:
-            return 2
-
-class Tower(Entity):
-    FIRE_COOLDOWN_FRAMES = 30
-
-    def __init__(self, x: float, y: float, color: str):
-        super().__init__(x, y)
-        self.color: str = color
-        self.upgraded: bool = False
-        self.color_b: Optional[str] = None
-        self.cooldown: int = 0
-        self.direction: Direction = Direction.UP
-        self.selected: bool = False
-
-    def upgrade(self, second_color: str) -> None:
-        self.upgraded = True
-        self.color_b = second_color
-
-    def set_direction(self, direction: Direction) -> None:
-        self.direction = direction
-
-    def update(self) -> None:
-        if self.cooldown > 0:
-            self.cooldown -= 1
-
-    def can_fire(self) -> bool:
-        return self.cooldown == 0
-
-    def produce_bullets(self, bullet_speed: float) -> List[Bullet]:
-        self.cooldown = self.FIRE_COOLDOWN_FRAMES
-        dx, dy = DIRECTION_VECTORS[self.direction]
-        vx = dx * bullet_speed
-        vy = dy * bullet_speed
-        bullets = [Bullet(self.x, self.y, vx, vy, self.color)]
-        if self.upgraded and self.color_b is not None:
-            ox, oy = -dy, dx
-            bullets.append(
-                Bullet(self.x + ox * 3, self.y + oy * 3,
-                       vx, vy, self.color_b)
-            )
-        return bullets
-
-
-class EnemyFactory:
-    def __init__(self, settings: dict):
-        self.settings = settings
-        self._builders: Dict[str, Callable[..., Enemy]] = {}
-        self._register_defaults()
-
-    def _register_defaults(self) -> None:
-        self.register("normal",      self._build_normal)
-        self.register("regenerator", self._build_regenerator)
-        self.register("chameleon",   self._build_chameleon)
-        self.register("ghost", self._build_ghost)
-
-    def register(self, kind: str, builder: Callable[..., Enemy]) -> None:
-        self._builders[kind] = builder
-    
-    # ------------------------------------------------------------------ #
-    # Phase 6a: HP scales up every 3 rounds so later enemies are tougher. #
-    # Round 1-3  → base HP (1)                                            #
-    # Round 4-6  → base HP + 1                                            #
-    # Round 7-9  → base HP + 2                                            #
-    # Round 10+  → base HP + 3                                            #
-    # ------------------------------------------------------------------ #
-    def _hp_for_round(self, current_round: int, extra: int = 0) -> int:
-        base = self.settings["enemy_hp"]
-        bonus = (current_round - 1) // 3
-        return base + bonus + extra
-    
-    def create(self, kind: str, *, color: str, path_index: int,
-               current_round: int = 1, active_colors: int = 6) -> Enemy:
-        if kind not in self._builders:
-            raise ValueError(f"Unknown enemy kind: {kind!r}")
-
-        enemy = self._builders[kind](color=color, path_index=path_index,
-                                    current_round=current_round)
-
-        if isinstance(enemy, Chameleon):
-            enemy._num_colors = active_colors
-        return enemy
-
-
-
-    def _build_normal(self, *, color: str, path_index: int,
-                      current_round: int = 1) -> Enemy:
-        return Enemy(
-            color=color,
-            hp=self._hp_for_round(current_round),
-            speed=self.settings["enemy_speed"],
-            exp_value=self.settings["exp_per_kill"],
-            path_index=path_index,
-        )
-
-    def _build_regenerator(self, *, color: str, path_index: int,
-                           current_round: int = 1) -> Regenerator:
-        return Regenerator(
-            color=color,
-            hp=self._hp_for_round(current_round, extra=1),
-            speed=self.settings["enemy_speed"],
-            regen_cell_interval=self.settings["regen_cell_interval"],
-            cell_size=self.settings["cell_size"],
-            exp_value=self.settings["exp_per_kill"] + 1,
-            path_index=path_index,
-        )
-
-    def _build_chameleon(self, *, color: str, path_index: int,
-                         current_round: int = 1) -> Chameleon:
-        return Chameleon(
-            color=color,
-            hp=self._hp_for_round(current_round),
-            speed=self.settings["enemy_speed"],
-            change_frames=self.settings["chameleon_change_frames"],
-            num_colors=self.settings["num_colors"],
-            exp_value=self.settings["exp_per_kill"] + 1,
-            path_index=path_index,
-        )
-
-    def _build_ghost(self, *, color: str, path_index: int,
-                     current_round: int = 1) -> Ghost:
-        return Ghost(
-            hp=self._hp_for_round(current_round),
-            speed=self.settings["enemy_speed"],
-            path_index=path_index,
-        )
-
-    def pick_kind(self, current_round: int) -> str:
-        # Rounds 1-3: normals only → gradually introduce specials
-        # Rounds 4-6: mix in regenerators and chameleons
-        # Rounds 7-9: heavier mix, more chameleons
-        # Rounds 10-12: max difficulty — fewest normals
-        if current_round <= 1:
-            pool = ["normal"] * 10
-        elif current_round == 3:
-            pool = ["normal"] * 8 + ["regenerator"] * 2
-        elif current_round == 4:
-            pool = ["normal"] * 6 + ["regenerator"] * 2 + ["chameleon"] * 2
-        elif current_round <= 6:
-            pool = ["normal"] * 4 + ["regenerator"] * 3 + ["chameleon"] * 2 + ["ghost"] * 1
-        elif current_round <= 9:
-            pool = ["normal"] * 3 + ["regenerator"] * 3 + ["chameleon"] * 3 + ["ghost"] * 1
-        else:
-            pool = ["normal"] * 2 + ["regenerator"] * 3 + ["chameleon"] * 3 + ["ghost"] * 2
-        return random.choice(pool)
-
-    def pick_color(self) -> str:
-        n = self.settings["num_colors"]
-        return random.choice(COLOR_ORDER[:n])
-
-@dataclass(frozen=True, slots=True)
-class RoundData:
-    round_number: int
-    total_enemies: int
-    spawn_interval: int
-    speed_boost: float
-    active_colors: int
-    path_count: int = 1
-    tunnels: int = 0
-    unlock_towers: bool = False
-    unlock_upgrade: bool = False
-    unlock_build_ui: bool = False
-
-class GameMode(ABC):
-    @abstractmethod
-    def get_round_data(self, round_number: int, settings: dict) -> RoundData:
-        ...
-    @abstractmethod
-    def can_continue(self, round_number: int, settings: dict) -> bool: 
-        ...
-    @abstractmethod
-    def max_rounds(self) -> Optional[int]:
-        ...
-
-class CampaignMode(GameMode):
-    _ROUNDS: List[RoundData] = [
-            RoundData(1, 5, 40, 0.0, 2, 1, 0),
-            RoundData(2, 8, 38, 0.0, 3, 1, 0, True, False, True),
-            RoundData(3, 10, 38, 0.0, 3, 1, 0, True, False, True),
-            RoundData(4, 12, 35, 0.0, 4, 1, 0, True, False, True),
-            RoundData(5, 12, 35, 0.0, 4, 2, 1, True, True, True),
-            RoundData(6, 13, 35, 0.0, 5, 2, 1, True, True, True),
-            RoundData(7, 15, 32, 0.1, 5, 2, 1, True, True, True),
-            RoundData(8, 16, 32, 0.1, 5, 2, 1, True, True, True),
-            RoundData(9, 18, 32, 0.2, 6, 2, 2, True, True, True),
-            RoundData(10, 18, 30, 0.4, 6, 2, 2, True, True, True),
-            RoundData(11, 20, 30, 0.8, 6, 2, 2, True, True, True),
-            RoundData(12, 20, 30, 1.0, 6, 2, 2, True, True, True),
+        msgs = [
+            f"BUILD MODE — EXP: {self.model.exp}",
         ]
 
-    def get_round_data(self, round_number: int, settings: dict) -> RoundData:
-        if round_number < 1 or round_number > len(self._ROUNDS):
-            raise IndexError("All rounds completed.")
-        return self._ROUNDS[round_number - 1]
-    
-    def can_continue(self, round_number: int, settings: dict) -> bool:
-        return round_number <= len(self._ROUNDS)
-    
-    def max_rounds(self) -> Optional[int]:
-        return len(self._ROUNDS)
-
-class EndlessMode(GameMode):
-
-    def get_round_data(self, round_number: int, settings: dict) -> RoundData:
-        return RoundData(
-            round_number=round_number,
-            total_enemies=5 + round_number * 2,
-            spawn_interval=max(10, 40 - round_number // 2),
-            speed_boost=round_number * 0.001,
-            active_colors=min(
-                2 + round_number // 3,
-                settings["num_colors"]
-            ),
-            path_count=2,
-            tunnels=2,
-            unlock_towers=True,
-            unlock_upgrade=True,
-            unlock_build_ui=True,
-        )
- 
-    def can_continue(self, round_number: int, settings: dict) -> bool:
-        return True  # endless
- 
-    def max_rounds(self) -> Optional[int]:
-        return None
-
-class RoundManager:
-    def __init__(self, settings: dict, enemy_factory: EnemyFactory, game_mode: GameMode):
-        self.settings = settings
-        self.factory = enemy_factory
-        self.mode = game_mode
-
-        self.current_round: int = 0
-        self._enemies_to_spawn: int = 0
-        self._spawn_timer: int = 0
-
-    def start_next_round(self) -> bool:
-        if not self.mode.can_continue(self.current_round + 1, self.settings):
-            return False
-
-        self.current_round += 1
-        round_data = self.mode.get_round_data(self.current_round, self.settings)
-
-        self._enemies_to_spawn = round_data.total_enemies
-        self._spawn_timer = 0
-        return True
-
-    def all_rounds_finished(self) -> bool:
-        return not self.mode.can_continue(self.current_round + 1, self.settings)
-
-    def maybe_spawn(self, num_paths: int) -> Optional[Enemy]:
-        if self._enemies_to_spawn <= 0:
-            return None
-
-        if self._spawn_timer > 0:
-            self._spawn_timer -= 1
-            return None
-
-        round_data = self.mode.get_round_data(
-            self.current_round,
-            self.settings
-        )
-        
-
-        max_allowed_paths = min(num_paths, round_data.path_count)
-        path_idx = random.randint(0, max_allowed_paths - 1)
-        kind = self.factory.pick_kind(self.current_round)
-        color = random.choice(COLOR_ORDER[:round_data.active_colors])
-
-        enemy = self.factory.create(kind, color=color, path_index=path_idx,
-                                    current_round=self.current_round,
-                                    active_colors=round_data.active_colors)
-
-        enemy.speed += round_data.speed_boost
-
-        self._enemies_to_spawn -= 1
-        self._spawn_timer = round_data.spawn_interval
-
-        return enemy
-    
-    def round_complete(self, live_enemies: List[Enemy]) -> bool:
-        return (
-            self._enemies_to_spawn <= 0
-            and not any(e.alive for e in live_enemies)
-        )
-
-
-class GameModel:
-    def __init__(self, settings: dict, mode_type: RoundType = RoundType.CAMPAIGN):
-        self.settings = settings
-        self.mode_type = mode_type
-        self.player_name: str = ""
-
-        sw = settings["screen_width"]
-        sh = settings["screen_height"]
-        cs = settings["cell_size"]
-
-        half = cs // 2
-
-        path_a_x = sw - cs * 4 + half
-        path_a_y = (sh // 2 // cs) * cs + half
-        self.paths: List[Path] = [
-            Path(
-                waypoints=[
-                    (half,       path_a_y),
-                    (path_a_x,   path_a_y),
-                    (path_a_x,   sh - half),
-                ],
-                tunnels_in_cells=[(5, 8)],
-                cell_size=cs,
-            ),
-            Path(
-                waypoints=[
-                    (cs * 2 + half,   half),
-                    (cs * 2 + half,   sh - cs * 5 + half),
-                    (sw - half,       sh - cs * 5 + half),
-                ],
-                tunnels_in_cells=[(4, 7)],
-                cell_size=cs,
-            ),
-        ]
-
-        self.shooter = Shooter(sw // 2, sh // 2, settings["num_colors"])
-
-        self.lives: int = settings["player_lives"]
-        self.exp: int   = 0
-        self.state: GameState = GameState.MENU
-
-        self.enemies: List[Enemy] = []
-        self.bullets: List[Bullet] = []
-        self.towers:  List[Tower]  = []
-        self.hearts: List[Heart] = []
-
-        self.enemy_factory = EnemyFactory(settings)
-        self._hearts_spawned: int = 0
-        self._heart_spawn_timer: int = 0
-        
-        if mode_type == RoundType.ENDLESS:
-            chosen_mode = EndlessMode()
+        if towers_unlocked:
+            msgs.extend([f"T: place tower ({cost_tower} EXP)", 
+                        "C: cycle tower color",
+                        "RClick/TAB: select   WASD: aim"])
         else:
-            chosen_mode = CampaignMode()
+            msgs.append("T: LOCKED")
+        
+        if upgrades_unlocked:
+            msgs.append(f"U: upgrade selected ({cost_upgrade} EXP)")
+        else:
+            msgs.append("U: UPGRADES LOCKED")
             
-        self.round_manager = RoundManager(self.settings, self.enemy_factory, chosen_mode)
+        msgs.append("SPACE: start next round")
 
-    @property
-    def active_colors(self) -> int:
-        return self.round_data.active_colors
-    
-    @property
-    def current_round(self) -> int:
-        return self.round_manager.current_round
+        max_len = max(len(m) for m in msgs)
+        bw = max_len * 4 + 16
+        bh = len(msgs) * 8 + 12
+        bx = sw // 2 - bw // 2
+        by = sh - bh - 12
 
-    @property
-    def total_rounds(self) -> Optional[int]:
-        return self.round_manager.mode.max_rounds()
-    
-    @property
-    def round_data(self) -> RoundData:
-        round_number = max(1, self.current_round)
-        return self.round_manager.mode.get_round_data(round_number, self.settings)
-    
-    @property
-    def towers_unlocked(self) -> bool:
-        return self.round_data.unlock_towers
+        pyxel.rect(bx - 1, by - 1, bw + 2, bh + 2, 1)
+        pyxel.rectb(bx - 1, by - 1, bw + 2, bh + 2, 6)
 
-    @property
-    def upgrades_unlocked(self) -> bool:
-        return self.round_data.unlock_upgrade
-    
-    @property
-    def is_endless(self) -> bool:
-        return self.mode_type == RoundType.ENDLESS
-    
-    @property
-    def preview_next_round_data(self) -> RoundData:
-        next_round = self.current_round + 1
-        try:
-            return self.round_manager.mode.get_round_data(next_round, self.settings)
-        except (IndexError, Exception):
-            return self.round_data
+        for i, m in enumerate(msgs):
+            x = sw // 2 - len(m) * 2
+            y = by + 6 + i * 8
+            
+            color = 8 if "LOCKED" in m else (10 if i == 0 else 7)
 
-    def start_next_round(self) -> None:
-        self.enemies.clear()
-        self.bullets.clear()
-        if self.round_manager.start_next_round():
-            self.hearts.clear()
-            self._hearts_spawned = 0
-            self._heart_spawn_timer = 120
-            self.state = GameState.PLAYING
-            if self.shooter.color_idx >= self.round_data.active_colors:
-                self.shooter.color_idx = 0
-        else:
-            self.state = GameState.WIN
+            pyxel.text(x + 1, y + 1, m, 0)
+            pyxel.text(x,     y,     m, color)
 
-    def end_round(self) -> None:
-        if self.mode_type == RoundType.CAMPAIGN:
-            self.towers.clear()
-            self.bullets.clear()
-            self.enemies.clear()
-        if self.mode_type == RoundType.CAMPAIGN and self.round_manager.all_rounds_finished():
-            self.state = GameState.WIN
-        else:
-            self.state = GameState.CHOOSE
+        sel = self.controller._selected_tower
+        if sel is not None and sel in self.model.towers:
+            swatch_color = COLOR_PALETTE[sel.color]
+            label = f"SEL COLOR: {sel.color.upper()}"
+            lx = sw // 2 - len(label) * 2
+            ly = by - 10
+            pyxel.rect(lx - 2, ly - 1, len(label) * 4 + 4, 9, 1)
+            pyxel.rectb(lx - 2, ly - 1, len(label) * 4 + 4, 9, swatch_color)
+            pyxel.text(lx, ly, label, swatch_color)
 
-    def maybe_spawn_enemy(self) -> None:
-        enemy = self.round_manager.maybe_spawn(len(self.active_paths()))
-        if enemy is not None:
-            self.enemies.append(enemy)
+    def _draw_game_over(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        pyxel.rect(0, sh // 2 - 28, sw, 66, 0)
+        msg = "GAME OVER"
+        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 20, msg, 8)
 
-    def maybe_spawn_heart(self) -> bool:
-        if self._hearts_spawned >= Heart.max_hearts_per_round(self.current_round):
-            return False
-        self._heart_spawn_timer -= 1
-        if self._heart_spawn_timer > 0:
-            return False
+        name = self.model.player_name
+        cursor = "_" if (pyxel.frame_count // 15) % 2 == 0 else ""
+        pyxel.text(sw // 2 - 36, sh // 2 - 8, f"Name: {name}{cursor}", 7)
 
-        self._heart_spawn_timer = 500
-        return True
+        pyxel.text(sw // 2 - 44, sh // 2 + 4,  "ENTER: submit & view scores", 6)
+        pyxel.text(sw // 2 - 32, sh // 2 + 14, "ESC: back to menu", 6)
 
-    def place_heart(self, x: float, y: float) -> None:
-        self.hearts.append(Heart(x, y))
-        self._hearts_spawned += 1
-        self._heart_spawn_timer = 300
+    def _draw_win(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        pyxel.rect(0, sh // 2 - 28, sw, 66, 0)
 
-    def active_paths(self) -> List[Path]:
-        if self.state == GameState.BUILDING:
-            return self.paths[:self.preview_next_round_data.path_count]
-        return self.paths[:self.round_data.path_count]
+        msg = "YOU WIN!"
+        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 20, msg, 11)
 
-    def active_tunnel_count(self) -> int:
-        return self.round_data.tunnels
+        name = self.model.player_name
+        cursor = "_" if (pyxel.frame_count // 15) % 2 == 0 else ""
+        pyxel.text(sw // 2 - 36, sh // 2 - 8, f"Name: {name}{cursor}", 7)
 
-    def tunnel_per_path(self) -> List[int]:
-        rd = self.preview_next_round_data if self.state == GameState.BUILDING else self.round_data
-        count = rd.tunnels
-        paths = self.active_paths()
+        pyxel.text(sw // 2 - 44, sh // 2 + 4,  "ENTER: submit & view scores", 6)
+        pyxel.text(sw // 2 - 32, sh // 2 + 14, "ESC: back to menu", 6)
 
-        allocation = [0] * len(paths)
+    def _draw_pause(self):
+        sw, sh = pyxel.width, pyxel.height
 
-        for i in range(len(paths)):
-            if count <= 0:
-                break
-            allocation[i] = 1
-            count -= 1
+        for y in range(0, sh, 2):
+            for x in range(0, sw, 2):
+                pyxel.pset(x, y, 1)  # dark pixels
+
+        options = [
+            "Resume [P]",
+            "Back to Menu [ESC]",
+            "Quit Game [Q]"
+        ]
+
+        panel_w = 100
+        panel_h = 50
+        px = sw // 2 - panel_w // 2
+        py = sh // 2 - panel_h // 2
+
+        pyxel.rect(px, py, panel_w, panel_h, 0)
+        pyxel.rectb(px, py, panel_w, panel_h, 7)
+
+        pyxel.text(sw // 2 - len("PAUSED") * 2, py + 8, "PAUSED", 7)
         
-        return allocation
+        for i, opt in enumerate(options):
+            pyxel.text(sw // 2 -  len(opt) * 2, py + 20 + i * 8, opt, 6)
+
+    def _draw_leaderboard(self):
+        sw, sh = pyxel.width, pyxel.height
+        pyxel.text(sw//2 - 20, 20, "LEADERBOARD", 10)
+
+        scores = self.controller._load_scores()
+
+        for i, (mode, name, score) in enumerate(scores):
+            line = f"{i+1}. {name} ({mode}) - {score}"
+            pyxel.text(sw//2 - len(line)*2, 40 + i*10, line, 7)
+        pyxel.text(10, sh - 10, "ESC to return", 6)
+
+    def _draw_grid(self) -> None:
+        cs = self.model.settings["cell_size"]
+        sw = pyxel.width
+        sh = pyxel.height
+        for y in range(0, sh, cs):
+            if y < 9:
+                continue
+            for x in range(0, sw, cs):
+                pyxel.pset(x, y, 1)
+
+    def _draw_cursor_cell(self) -> None:
+        cs = self.model.settings["cell_size"]
+        cx, cy = self.controller._cursor_cell_center()
+        cell_x = int(cx - cs / 2)
+        cell_y = int(cy - cs / 2)
+        legal = self.controller._is_legal_tower_spot(cx, cy)
+        color = 11 if legal else 8
+        pyxel.rectb(cell_x, cell_y, cs, cs, color)
+
+    def _draw_paths(self) -> None:
+
+        active_paths = self.model.active_paths()
+        tunnel_allocation = self.model.tunnel_per_path()
+        
+        for i, path in enumerate(active_paths):
+            wp = path.waypoints
+
+            if len(wp) < 2:
+                continue
+
+            for j in range(1, len(wp)):
+                x0, y0 = wp[j - 1]
+                x1, y1 = wp[j]
+                for dx, dy in [(-1, 0), (0, 0), (1, 0), (0, -1), (0, 1)]:
+                    pyxel.line(x0 + dx, y0 + dy, x1 + dx, y1 + dy, 5)
+
+            tunnel_count = tunnel_allocation[i]
+            visible_tunnels = path.active_tunnels(tunnel_count)
+
+            for tunnel in visible_tunnels:
+                self._draw_tunnel(path, tunnel)
+
+            sx, sy = wp[0][0], wp[0][1]
+            ex, ey = wp[-1][0], wp[-1][1]
+            pyxel.circb(sx, sy, 3, 11)
+            pyxel.circb(ex, ey, 3, 8)
+
+    def _draw_tunnel(self, path, tunnel) -> None:
+        steps = max(2, int(tunnel.length // 2))
+        for i in range(steps + 1):
+            p = tunnel.start + (tunnel.length * i / steps)
+            x, y = path.position_at(p)
+            pyxel.rect(int(x) - 4, int(y) - 4, 9, 9, 1)
+            pyxel.rectb(int(x) - 4, int(y) - 4, 9, 9, 13)
+        sx, sy = path.position_at(tunnel.start)
+        ex, ey = path.position_at(tunnel.end)
+        pyxel.text(int(sx) - 6, int(sy) - 3, "[", 13)
+        pyxel.text(int(ex) - 0, int(ey) - 3, "]", 13)
+
+    def _draw_enemies(self) -> None:
+        _SPRITE_W = 8
+        _SPRITE_H = 8
+        for e in self.model.enemies:
+            if not e.alive:
+                continue
+            color_idx = COLOR_PALETTE[e.color]
+            ex, ey = int(e.x), int(e.y)
+
+            if self._sprites_loaded:
+                if isinstance(e, Ghost):
+                    sx = 0
+                    sy = 6 * _SPRITE_H
+                else:
+                    try:
+                        row = COLOR_ORDER.index(e.color)
+                    except ValueError:
+                        row = 0
+                    sx = 0
+                    sy = row * _SPRITE_H
+                draw_x = ex - _SPRITE_W // 2
+                draw_y = ey - _SPRITE_H // 2
+                pyxel.blt(draw_x, draw_y, 0, sx, sy, _SPRITE_W, _SPRITE_H, 0)
+                if e.in_tunnel:
+                    pyxel.rectb(draw_x, draw_y, _SPRITE_W, _SPRITE_H, 13)
+            else:
+                outline = 13 if e.in_tunnel else 0
+                if isinstance(e, Ghost):
+                    # Semi-transparent look: draw as a white circle with dark outline
+                    pyxel.circ(ex, ey, ENEMY_RADIUS, 7)
+                    pyxel.circb(ex, ey, ENEMY_RADIUS, 5 if not e.in_tunnel else 13)
+                else:
+                    pyxel.circ(ex, ey, ENEMY_RADIUS, color_idx)
+                    pyxel.circb(ex, ey, ENEMY_RADIUS, outline)
+
+            self._draw_enemy_badge(e, ex, ey)
+
+            if e.hp < e.max_hp:
+                bar_w = 10
+                filled = int(bar_w * e.hp / e.max_hp)
+                pyxel.rect(ex - 5, ey - 9, bar_w, 1, 0)
+                pyxel.rect(ex - 5, ey - 9, filled, 1, 11)
+
+    def _draw_enemy_badge(self, e, ex: int, ey: int) -> None:
+        badge_y = ey - ENEMY_RADIUS - 5
+
+        if isinstance(e, Regenerator):
+            cx, cy = ex, badge_y
+            pyxel.pset(cx,     cy,     11)
+            pyxel.pset(cx,     cy - 2, 11)
+            pyxel.pset(cx,     cy + 2, 11)
+            pyxel.pset(cx - 2, cy,     11)
+            pyxel.pset(cx + 2, cy,     11)
+
+        elif isinstance(e, Chameleon):
+            phase = (pyxel.frame_count // 8) % 4
+            cx, cy = ex, badge_y
+            tips = [
+                [(cx, cy - 2), (cx, cy + 2), (cx - 2, cy), (cx + 2, cy)],
+                [(cx - 1, cy - 1), (cx + 1, cy + 1), (cx - 2, cy), (cx + 2, cy)],
+                [(cx - 2, cy), (cx + 2, cy), (cx, cy - 1), (cx, cy + 1)],
+                [(cx - 1, cy + 1), (cx + 1, cy - 1), (cx - 2, cy), (cx + 2, cy)],
+            ]
+            badge_color = 10 if (pyxel.frame_count // 15) % 2 == 0 else 7
+            for px, py in tips[phase]:
+                pyxel.pset(px, py, badge_color)
+
+        elif isinstance(e, Saboteur):
+            cx, cy = ex, badge_y
+            bolt_color = 10 if (pyxel.frame_count // 10) % 2 == 0 else 7
+            pyxel.pset(cx + 1, cy - 2, bolt_color)
+            pyxel.pset(cx,     cy - 1, bolt_color)
+            pyxel.pset(cx + 1, cy,     bolt_color)
+            pyxel.pset(cx,     cy + 1, bolt_color)
+            pyxel.pset(cx + 1, cy + 2, bolt_color)
+
+        elif isinstance(e, Ghost):
+            # Flickering "~" tilde badge to signal EXP steal
+            if (pyxel.frame_count // 8) % 2 == 0:
+                pyxel.text(ex - 2, badge_y - 1, "~", 7)
     
-    def round_complete(self) -> bool:
-        return self.round_manager.round_complete(self.enemies)
+    def _draw_hearts(self) -> None:
+        _SPRITE_W = 8
+        _SPRITE_H = 8
+        sx = 0
+        sy = 7 * _SPRITE_H
 
-    def can_afford_tower(self) -> bool:
-        return self.exp >= self.settings["tower_cost"]
+        for h in self.model.hearts:
+            if not h.alive:
+                continue
+            hx, hy = int(h.x), int(h.y)
+            if self._sprites_loaded:
+                pyxel.blt(
+                    hx - _SPRITE_W // 2,
+                    hy - _SPRITE_H // 2,
+                    0, sx, sy, _SPRITE_W, _SPRITE_H, 0
+                )
+            else:
+                pyxel.circb(hx, hy, 5, 8)
+        
+        for h in self.model.hearts:
+            if h.alive and (pyxel.frame_count // 20) % 2 == 0:
+                hx, hy = int(h.x), int(h.y)
+                pyxel.rectb(hx - 5, hy - 5, 10, 10, 7)
 
-    def can_afford_upgrade(self) -> bool:
-        return self.exp >= self.settings["tower_upgrade_cost"]
 
-    def place_tower(self, x: float, y: float) -> Optional[Tower]:
-        if not self.round_data.unlock_towers:
-            return None
-        if not self.can_afford_tower():
-            return None
-        self.exp -= self.settings["tower_cost"]
-        n = self.settings["num_colors"]
-        color = random.choice(COLOR_ORDER[:n])
-        tower = Tower(x, y, color)
-        self.towers.append(tower)
-        return tower
 
-    def upgrade_tower(self, tower: Tower) -> bool:
-        if not self.round_data.unlock_upgrade:
-            return False
-        if tower.upgraded or not self.can_afford_upgrade():
-            return False
-        self.exp -= self.settings["tower_upgrade_cost"]
-        n = self.settings["num_colors"]
-        choices = [c for c in COLOR_ORDER[:n] if c != tower.color]
-        second = random.choice(choices) if choices else tower.color
-        tower.upgrade(second)
-        return True
+    def _draw_bullets(self) -> None:
+        for b in self.model.bullets:
+            if not b.alive:
+                continue
+            color_idx = COLOR_PALETTE[b.color]
+            bx, by = int(b.x), int(b.y)
+            if isinstance(b, SniperBullet):
+                pyxel.line(bx - int(b.vx), by - int(b.vy), bx, by, color_idx)
+                pyxel.pset(bx, by, 7)
+            elif isinstance(b, BombBullet):
+                r = 3 if (pyxel.frame_count // 4) % 2 == 0 else 4
+                pyxel.circb(bx, by, r, color_idx)
+                pyxel.pset(bx, by, 10)
+            else:
+                pyxel.circ(bx, by, 2, color_idx)
+                pyxel.pset(bx, by, 7)
+
+    def _draw_shooter(self) -> None:
+        s = self.model.shooter
+        x, y = int(s.x), int(s.y)
+
+        pyxel.rect(x - 6, y - 6, 12, 12, 1)
+        pyxel.rectb(x - 6, y - 6, 12, 12, 6)
+
+        ammo_color = COLOR_PALETTE[s.color]
+        pyxel.circ(x, y, 3, ammo_color)
+        pyxel.circb(x, y, 3, 7)
+
+        bx = x + int(math.cos(s.aim_angle) * 10)
+        by = y + int(math.sin(s.aim_angle) * 10)
+        pyxel.line(x, y, bx, by, 7)
+
+    def _draw_towers(self) -> None:
+        for t in self.model.towers:
+            x, y = int(t.x), int(t.y)
+            base_color = COLOR_PALETTE[t.color]
+
+            if t.is_disabled:
+                base_color = 8 if (pyxel.frame_count // 6) % 2 == 0 else 1
+
+            if t.selected:
+                pyxel.rectb(x - 7, y - 7, 14, 14, 10)
+
+            if isinstance(t, SlowTower):
+                pyxel.circ(x, y, 5, base_color)
+                pyxel.circb(x, y, SlowTower.SLOW_RADIUS, 12)
+                pyxel.text(x - 2, y - 2, "S", 7)
+            elif isinstance(t, BurstTower):
+                pyxel.rect(x - 5, y - 5, 10, 10, base_color)
+                pyxel.rectb(x - 5, y - 5, 10, 10, 0)
+                for d in DIRECTION_VECTORS:
+                    ddx, ddy = DIRECTION_VECTORS[d]
+                    pyxel.pset(x + ddx * 6, y + ddy * 6, 7)
+            else:
+                pyxel.rect(x - 5, y - 5, 10, 10, base_color)
+                pyxel.rectb(x - 5, y - 5, 10, 10, 0)
+                dx, dy = DIRECTION_VECTORS[t.direction]
+                bx = x + dx * 8
+                by = y + dy * 8
+                pyxel.line(x, y, bx, by, 6)
+                pyxel.pset(bx, by, 7)
+
+            if t.upgraded and t.color_b is not None:
+                second = COLOR_PALETTE[t.color_b]
+                pyxel.circ(x + 3, y - 7, 1, second)
+                pyxel.text(x - 2, y - 2, "+", 7)
+
+    def _draw_shop_overlay(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        bw, bh = 162, 104
+        bx = sw // 2 - bw // 2
+        by = sh // 2 - bh // 2
+        pyxel.rect(bx, by, bw, bh, 1)
+        pyxel.rectb(bx, by, bw, bh, 9)
+
+        pyxel.text(bx + bw // 2 - 10, by + 4, "SHOP", 9)
+        pyxel.text(bx + 4, by + 4, f"EXP:{self.model.exp}", 10)
+
+        shop = self.model.shop
+        for i, item in enumerate(shop.items):
+            iy = by + 16 + i * 14
+            is_sel = (i == shop.cursor)
+            can = self.model.exp >= item.cost
+            fg = 10 if can else 8
+            if is_sel:
+                pyxel.rect(bx + 2, iy - 1, bw - 4, 12, 0)
+                pyxel.rectb(bx + 2, iy - 1, bw - 4, 12, 9)
+            pyxel.text(bx + 6, iy, item.label, 7 if is_sel else fg)
+            cost_str = f"{item.cost}EXP"
+            pyxel.text(bx + bw - len(cost_str) * 4 - 6, iy, cost_str, fg)
+
+        footer = "UP/DN:select  ENTER:buy  ESC:back"
+        pyxel.text(bx + bw // 2 - len(footer) * 2, by + bh - 10, footer, 6)
+
+    def _draw_special_ammo_hud(self) -> None:
+        parts = []
+        active = self.model.active_special
+        if self.model.sniper_ammo > 0:
+            parts.append((f"SNP:{self.model.sniper_ammo}", active == "sniper"))
+        if self.model.bomb_ammo > 0:
+            parts.append((f"BOM:{self.model.bomb_ammo}", active == "bomb"))
+        if not parts:
+            return
+        x = 2
+        pyxel.text(x, 11, "X> ", 9)
+        x += 12
+        for label, is_active in parts:
+            color = 10 if is_active else 6
+            text = f"[{label}]" if is_active else label
+            pyxel.text(x, 11, text, color)
+            x += (len(text) + 1) * 4
+
+    def _draw_hud(self) -> None:
+        sw = pyxel.width
+        pyxel.rect(0, 0, sw, 9, 1)
+        pyxel.text(2,  2, f"LIVES:{self.model.lives}", 8)
+        pyxel.text(40, 2, f"EXP:{self.model.exp}",     10)
+
+        if self.model.mode_type == RoundType.ENDLESS:
+            round_str = f"R:{self.model.current_round} (ENDLESS)"
+        else:
+            total = getattr(self.model, "total_rounds", 12)
+            round_str = f"R:{self.model.current_round}/{total}"
+            
+        pyxel.text(80, 2, round_str, 7)
+
+        s = self.model.shooter
+        label = f"AMMO:{s.color.upper()}"
+        pyxel.text(sw - len(label) * 4 - 2, 2, label, COLOR_PALETTE[s.color])
+
+        self._draw_special_ammo_hud()
+
+        pyxel.text(2, pyxel.height - 24, "! Sab",   10)
+        pyxel.text(2, pyxel.height - 16, "+ Regen", 11)
+        pyxel.text(2, pyxel.height - 8,  "* Cham",  10)
+
+        sel = self.controller._selected_tower
+        if sel is not None and sel in self.model.towers:
+            dirname = sel.direction.value.upper()
+            txt = f"SEL DIR:{dirname}"
+            pyxel.text(sw - len(txt) * 4 - 2, pyxel.height - 8, txt, 7)
+        
+        self._draw_music_button()
+
+    def _draw_music_button(self) -> None:
+        music_on = self.controller._bgm_playing or self.controller._menu_bgm_playing
+        state_text = "[ON]" if music_on else "[OFF]"
+        display = f"MUSIC <M>: {state_text}"
+        sw = pyxel.width
+        color = 11 if music_on else 8
+        pyxel.text(sw // 2 - len(display) * 2 + 45, 2, display, color)
