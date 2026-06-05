@@ -2,6 +2,8 @@ import math
 import pyxel
 
 from .model import (
+    BombBullet,
+    BurstTower,
     Chameleon,
     COLOR_ORDER,
     COLOR_PALETTE,
@@ -10,7 +12,11 @@ from .model import (
     GameState,
     Ghost,
     Regenerator,
-    RoundType
+    RoundType,
+    Saboteur,
+    SlowTower,
+    SniperBullet,
+    SHOP_ITEMS,
 )
 
 
@@ -24,9 +30,9 @@ class GameView:
         _res = pathlib.Path(__file__).resolve().parent.parent / "enemies.pyxres"
         if _res.exists():
             try:
-                pyxel.load(str(_res), excl_images=False,
-                           excl_tilemaps=True, excl_sounds=True,
-                           excl_musics=True)
+                pyxel.load(str(_res), exclude_images=False,
+                           exclude_tilemaps=True, exclude_sounds=True,
+                           exclude_musics=True)
                 self._sprites_loaded = True
             except Exception:
                 pass
@@ -52,6 +58,10 @@ class GameView:
             self._draw_play_field()
             self._draw_build_overlay()
             self._draw_hud()
+        elif state == GameState.SHOP:
+            self._draw_play_field()
+            self._draw_shop_overlay()
+            self._draw_hud()
         elif state == GameState.PAUSED:
             self._draw_play_field()
             self._draw_pause()
@@ -64,41 +74,186 @@ class GameView:
             self._draw_play_field()
             self._draw_win()
 
+    # ── Big pixel font ────────────────────────────────────────────────────────
+    # Each letter is a 5-wide × 5-tall bitmap (list of 5 strings, '1'=on '0'=off)
+    _BIG_FONT = {
+        'Z': ["11111","00011","00110","01100","11111"],
+        'U': ["10001","10001","10001","10001","01110"],
+        'M': ["10001","11011","10101","10001","10001"],
+        'A': ["01110","10001","11111","10001","10001"],
+        ':': ["00000","00100","00000","00100","00000"],
+        'T': ["11111","00100","00100","00100","00100"],
+        'O': ["01110","10001","10001","10001","01110"],
+        'W': ["10001","10001","10101","11011","10001"],
+        'E': ["11111","10000","11110","10000","11111"],
+        'R': ["11110","10001","11110","10100","10011"],
+        'D': ["11110","10001","10001","10001","11110"],
+        'F': ["11111","10000","11110","10000","10000"],
+        'N': ["10001","11001","10101","10011","10001"],
+        'S': ["01111","10000","01110","00001","11110"],
+        ' ': ["00000","00000","00000","00000","00000"],
+    }
+
+    def _draw_big_text(self, text: str, x: int, y: int,
+                       color: int, scale: int = 2) -> int:
+        """Draw text using the big pixel font. Returns total width drawn."""
+        cx = x
+        for ch in text.upper():
+            bitmap = self._BIG_FONT.get(ch, self._BIG_FONT[' '])
+            for row, bits in enumerate(bitmap):
+                for col, bit in enumerate(bits):
+                    if bit == '1':
+                        pyxel.rect(cx + col * scale,
+                                   y  + row * scale,
+                                   scale, scale, color)
+            cx += (5 + 1) * scale   # 5 cols + 1 gap
+        return cx - x
+
+    def _draw_ghost_sprite(self, x: int, y: int,
+                           frame: int, color: int = 7) -> None:
+        """Draw a small pixelated ghost at (x,y). frame drives the bobbing."""
+        bob = 1 if (frame // 12) % 2 == 0 else 0
+        gy = y + bob
+
+        # Body — dome top
+        body = [
+            "01110",
+            "11111",
+            "11111",
+            "11111",
+            "11011",   # wavy bottom
+        ]
+        sc = 2
+        for row, bits in enumerate(body):
+            for col, bit in enumerate(bits):
+                if bit == '1':
+                    pyxel.rect(x + col * sc, gy + row * sc, sc, sc, color)
+
+        # Eyes — two dark pixels
+        eye_c = 0
+        pyxel.rect(x + 1 * sc, gy + 1 * sc, sc, sc, eye_c)
+        pyxel.rect(x + 3 * sc, gy + 1 * sc, sc, sc, eye_c)
+
+        # Trailing squiggle below ghost (animated)
+        trail_phase = (frame // 8) % 3
+        trail_offsets = [(0, 0), (2, -1), (4, 0), (6, -1), (8, 0)]
+        for i, (tx, ty_off) in enumerate(trail_offsets):
+            ty_val = gy + 5 * sc + ty_off * sc + (1 if (i + trail_phase) % 2 == 0 else 0)
+            pyxel.rect(x + tx, ty_val, sc, 1, color)
+
     def _draw_menu(self) -> None:
         sw, sh = pyxel.width, pyxel.height
+        fc = pyxel.frame_count
 
-        title = "ZUMA: TOWER DEFENSE"
-        x = sw // 2 - len(title) * 2
-        pyxel.text(x + 1, sh // 3 + 1, title, 1)
-        pyxel.text(x,     sh // 3,     title, 10)
+        # ── Starfield — full screen, deterministic twinkle ────────────────
+        for i in range(48):
+            sx = (i * 37 + 13) % sw
+            sy = (i * 53 + 7)  % sh
+            if (fc // (4 + i % 5) + i) % 3 != 0:
+                pyxel.pset(sx, sy, 1 if i % 3 == 0 else 5)
 
-        if (pyxel.frame_count // 15) % 2 == 0:
-            prompt_1 = "Press [1] to start CAMPAIGN MODE"
-            prompt_2 = "Press [2] to start ENDLESS MODE"
-            pyxel.text(sw // 2 - len(prompt_1) * 2, sh // 3 + 20,      prompt_1, 11)
-            pyxel.text(sw // 2 - len(prompt_2) * 2, sh // 3 + 30, prompt_2, 12)
+        # ── Layout math ───────────────────────────────────────────────────
+        scale = 2
+        char_w = (5 + 1) * scale   # 12px per char
+        line1, line2 = "ZUMA:", "TOWER DEFENSE"
+        w1 = len(line1) * char_w - scale
+        w2 = len(line2) * char_w - scale
+        line_h = 5 * scale         # 10px tall per line
 
-        options = [
-            "L - Leaderboard",
-            "M - Toggle Music",
+        # Total block height: line1 + gap4 + line2 + gap10 + panel + gap6 + music
+        panel_items = [
+            ("[1] Campaign Mode",  11),
+            ("[2] Endless Mode",   12),
+            ("[L] Leaderboard",    7),
+            ("[K] Controls",       6),
+            ("[M] Toggle Music",   6),
         ]
-        for i, opt in enumerate(options):
-            pyxel.text(sw // 2 - len(opt) * 2, sh // 3 + 48 + i * 10, opt, 7)
+        pw = 120
+        ph = len(panel_items) * 12 + 10
+        total_h = line_h + 4 + line_h + 10 + ph + 6 + 6
+        start_y = (sh - total_h) // 2
 
-        help_lines = [
-            "Mouse: aim & shoot",
-            "1..5 / Wheel: change ammo color (In-Game)",
-            "B: enter build phase after round",
-            "T (build): place tower     U (build): upgrade tower",
-            "C (build): cycle tower color",
-            "RClick / TAB: select tower  WASD: aim selected",
-            "SPACE: next round",
-            "+ = Regenerator (heals over distance)",
-            "* = Chameleon (changes color!)",
-            "Q: quit      R: restart on game over",
+        ty1 = start_y
+        ty2 = ty1 + line_h + 4
+        py  = ty2 + line_h + 10
+
+        # ── Title ─────────────────────────────────────────────────────────
+        c1 = 10 if (fc // 20) % 2 == 0 else 9
+        # Shadow
+        self._draw_big_text(line1, sw // 2 - w1 // 2 + 1, ty1 + 1, 1, scale)
+        self._draw_big_text(line2, sw // 2 - w2 // 2 + 1, ty2 + 1, 1, scale)
+        # Title
+        self._draw_big_text(line1, sw // 2 - w1 // 2, ty1, c1, scale)
+        self._draw_big_text(line2, sw // 2 - w2 // 2, ty2, 7,  scale)
+
+        # ── Ghosts — just left and right of "ZUMA:" on the same row ───────
+        ghost_y = ty1 - 1
+        ghost_sc = 2   # ghost body is 5*sc=10px wide
+        left_x  = sw // 2 - w1 // 2 - ghost_sc * 5 - 6
+        right_x = sw // 2 + w1 // 2 + 6
+        self._draw_ghost_sprite(left_x,  ghost_y, fc,      color=7)
+        self._draw_ghost_sprite(right_x, ghost_y, fc + 24, color=5)
+
+        # ── Menu panel ────────────────────────────────────────────────────
+        px_panel = sw // 2 - pw // 2
+        pyxel.rect(px_panel - 1, py - 1, pw + 2, ph + 2, 1)
+        pyxel.rectb(px_panel - 1, py - 1, pw + 2, ph + 2, 5)
+
+        for i, (label, color) in enumerate(panel_items):
+            lx = sw // 2 - len(label) * 2
+            ly = py + 5 + i * 12
+            if i < 2 and (fc // 18) % 2 == 1:
+                continue
+            pyxel.text(lx, ly, label, color)
+
+        # ── Music state ───────────────────────────────────────────────────
+        music_on = self.controller._menu_bgm_playing or self.controller._bgm_playing
+        state_str = "MUSIC: ON" if music_on else "MUSIC: OFF"
+        mc = 11 if music_on else 8
+        pyxel.text(sw // 2 - len(state_str) * 2, py + ph + 6, state_str, mc)
+
+        # ── Controls overlay if toggled ───────────────────────────────────
+        if self.controller._show_controls:
+            self._draw_controls_overlay()
+
+    def _draw_controls_overlay(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        lines = [
+            ("-- SHOOTING --",        7),
+            ("Mouse: aim",            6),
+            ("Hold LClick: shoot",    6),
+            ("1-6 / Wheel: ammo",     6),
+            ("X: cycle special ammo", 6),
+            ("",                      0),
+            ("-- BUILD MODE --",      7),
+            ("T: place tower",        6),
+            ("U: upgrade tower",      6),
+            ("C: cycle color",        6),
+            ("RClick/TAB: select",    6),
+            ("WASD: aim tower",       6),
+            ("SPACE: next round",     6),
+            ("",                      0),
+            ("-- BETWEEN ROUNDS --",  7),
+            ("B: build phase",        6),
+            ("O: shop",               6),
+            ("",                      0),
+            ("-- ENEMIES --",         7),
+            ("+ Regen  * Cham",       6),
+            ("! Saboteur  ~ Ghost",   6),
+            ("",                      0),
+            ("[K] close",             5),
         ]
-        for i, line in enumerate(help_lines):
-            pyxel.text(8, sh - 8 * (len(help_lines) - i + 1), line, 6)
+        pw = 140
+        ph = len(lines) * 7 + 10
+        ox = sw // 2 - pw // 2
+        oy = max(4, sh // 2 - ph // 2)
+
+        pyxel.rect(ox, oy, pw, ph, 0)
+        pyxel.rectb(ox, oy, pw, ph, 6)
+
+        for i, (text, color) in enumerate(lines):
+            if text:
+                pyxel.text(ox + 6, oy + 5 + i * 7, text, color)
 
     def _draw_play_field(self) -> None:
         self._draw_grid()
@@ -127,6 +282,7 @@ class GameView:
             ])
         elif self.model.towers_unlocked:
             msgs.append(" B - Build towers")
+        msgs.append(" O - Shop")
         msgs.append("SPACE - Next round")
 
         max_len = max(len(m) for m in msgs)
@@ -207,33 +363,30 @@ class GameView:
 
     def _draw_game_over(self) -> None:
         sw, sh = pyxel.width, pyxel.height
-        pyxel.rect(0, sh // 2 - 20, sw, 50, 0)
+        pyxel.rect(0, sh // 2 - 28, sw, 66, 0)
         msg = "GAME OVER"
-        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 12, msg, 8)
-        sub = "Press R to restart"
-        pyxel.text(sw // 2 - len(sub) * 2, sh // 2 - 2, sub, 7)
+        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 20, msg, 8)
+
         name = self.model.player_name
-        pyxel.text(sw // 2 - 20, sh // 2 + 10, f"Name: {name}", 7)
-        pyxel.text(sw // 2 - 30, sh // 2 + 20, "ENTER to submit", 6)
+        cursor = "_" if (pyxel.frame_count // 15) % 2 == 0 else ""
+        pyxel.text(sw // 2 - 36, sh // 2 - 8, f"Name: {name}{cursor}", 7)
+
+        pyxel.text(sw // 2 - 44, sh // 2 + 4,  "ENTER: submit & view scores", 6)
+        pyxel.text(sw // 2 - 32, sh // 2 + 14, "ESC: back to menu", 6)
 
     def _draw_win(self) -> None:
         sw, sh = pyxel.width, pyxel.height
-        pyxel.rect(0, sh // 2 - 16, sw, 32, 0)
+        pyxel.rect(0, sh // 2 - 28, sw, 66, 0)
 
-        if self.model.state == GameState.WIN:
-            msg = "YOU WIN!"
-            color = 11
-        else:
-            msg = "GAME OVER"
-            color = 8
-
-        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 4, msg, color)
+        msg = "YOU WIN!"
+        pyxel.text(sw // 2 - len(msg) * 2, sh // 2 - 20, msg, 11)
 
         name = self.model.player_name
-        pyxel.text(sw // 2 - 40, sh // 2, f"Name: {name}", 7)
+        cursor = "_" if (pyxel.frame_count // 15) % 2 == 0 else ""
+        pyxel.text(sw // 2 - 36, sh // 2 - 8, f"Name: {name}{cursor}", 7)
 
-        pyxel.text(sw // 2 - 60, sh // 2 + 10, "ENTER to submit score", 6)
-        pyxel.text(sw // 2 - 50, sh // 2 + 20, "R to restart", 6)
+        pyxel.text(sw // 2 - 44, sh // 2 + 4,  "ENTER: submit & view scores", 6)
+        pyxel.text(sw // 2 - 32, sh // 2 + 14, "ESC: back to menu", 6)
 
     def _draw_pause(self):
         sw, sh = pyxel.width, pyxel.height
@@ -358,8 +511,13 @@ class GameView:
                     pyxel.rectb(draw_x, draw_y, _SPRITE_W, _SPRITE_H, 13)
             else:
                 outline = 13 if e.in_tunnel else 0
-                pyxel.circ(ex, ey, ENEMY_RADIUS, color_idx)
-                pyxel.circb(ex, ey, ENEMY_RADIUS, outline)
+                if isinstance(e, Ghost):
+                    # Semi-transparent look: draw as a white circle with dark outline
+                    pyxel.circ(ex, ey, ENEMY_RADIUS, 7)
+                    pyxel.circb(ex, ey, ENEMY_RADIUS, 5 if not e.in_tunnel else 13)
+                else:
+                    pyxel.circ(ex, ey, ENEMY_RADIUS, color_idx)
+                    pyxel.circb(ex, ey, ENEMY_RADIUS, outline)
 
             self._draw_enemy_badge(e, ex, ey)
 
@@ -392,6 +550,20 @@ class GameView:
             badge_color = 10 if (pyxel.frame_count // 15) % 2 == 0 else 7
             for px, py in tips[phase]:
                 pyxel.pset(px, py, badge_color)
+
+        elif isinstance(e, Saboteur):
+            cx, cy = ex, badge_y
+            bolt_color = 10 if (pyxel.frame_count // 10) % 2 == 0 else 7
+            pyxel.pset(cx + 1, cy - 2, bolt_color)
+            pyxel.pset(cx,     cy - 1, bolt_color)
+            pyxel.pset(cx + 1, cy,     bolt_color)
+            pyxel.pset(cx,     cy + 1, bolt_color)
+            pyxel.pset(cx + 1, cy + 2, bolt_color)
+
+        elif isinstance(e, Ghost):
+            # Flickering "~" tilde badge to signal EXP steal
+            if (pyxel.frame_count // 8) % 2 == 0:
+                pyxel.text(ex - 2, badge_y - 1, "~", 7)
     
     def _draw_hearts(self) -> None:
         _SPRITE_W = 8
@@ -424,8 +596,17 @@ class GameView:
             if not b.alive:
                 continue
             color_idx = COLOR_PALETTE[b.color]
-            pyxel.circ(int(b.x), int(b.y), 2, color_idx)
-            pyxel.pset(int(b.x), int(b.y), 7)
+            bx, by = int(b.x), int(b.y)
+            if isinstance(b, SniperBullet):
+                pyxel.line(bx - int(b.vx), by - int(b.vy), bx, by, color_idx)
+                pyxel.pset(bx, by, 7)
+            elif isinstance(b, BombBullet):
+                r = 3 if (pyxel.frame_count // 4) % 2 == 0 else 4
+                pyxel.circb(bx, by, r, color_idx)
+                pyxel.pset(bx, by, 10)
+            else:
+                pyxel.circ(bx, by, 2, color_idx)
+                pyxel.pset(bx, by, 7)
 
     def _draw_shooter(self) -> None:
         s = self.model.shooter
@@ -447,22 +628,80 @@ class GameView:
             x, y = int(t.x), int(t.y)
             base_color = COLOR_PALETTE[t.color]
 
+            if t.is_disabled:
+                base_color = 8 if (pyxel.frame_count // 6) % 2 == 0 else 1
+
             if t.selected:
                 pyxel.rectb(x - 7, y - 7, 14, 14, 10)
 
-            pyxel.rect(x - 5, y - 5, 10, 10, base_color)
-            pyxel.rectb(x - 5, y - 5, 10, 10, 0)
-
-            dx, dy = DIRECTION_VECTORS[t.direction]
-            bx = x + dx * 8
-            by = y + dy * 8
-            pyxel.line(x, y, bx, by, 6)
-            pyxel.pset(bx, by, 7)
+            if isinstance(t, SlowTower):
+                pyxel.circ(x, y, 5, base_color)
+                pyxel.circb(x, y, SlowTower.SLOW_RADIUS, 12)
+                pyxel.text(x - 2, y - 2, "S", 7)
+            elif isinstance(t, BurstTower):
+                pyxel.rect(x - 5, y - 5, 10, 10, base_color)
+                pyxel.rectb(x - 5, y - 5, 10, 10, 0)
+                for d in DIRECTION_VECTORS:
+                    ddx, ddy = DIRECTION_VECTORS[d]
+                    pyxel.pset(x + ddx * 6, y + ddy * 6, 7)
+            else:
+                pyxel.rect(x - 5, y - 5, 10, 10, base_color)
+                pyxel.rectb(x - 5, y - 5, 10, 10, 0)
+                dx, dy = DIRECTION_VECTORS[t.direction]
+                bx = x + dx * 8
+                by = y + dy * 8
+                pyxel.line(x, y, bx, by, 6)
+                pyxel.pset(bx, by, 7)
 
             if t.upgraded and t.color_b is not None:
                 second = COLOR_PALETTE[t.color_b]
                 pyxel.circ(x + 3, y - 7, 1, second)
                 pyxel.text(x - 2, y - 2, "+", 7)
+
+    def _draw_shop_overlay(self) -> None:
+        sw, sh = pyxel.width, pyxel.height
+        bw, bh = 162, 104
+        bx = sw // 2 - bw // 2
+        by = sh // 2 - bh // 2
+        pyxel.rect(bx, by, bw, bh, 1)
+        pyxel.rectb(bx, by, bw, bh, 9)
+
+        pyxel.text(bx + bw // 2 - 10, by + 4, "SHOP", 9)
+        pyxel.text(bx + 4, by + 4, f"EXP:{self.model.exp}", 10)
+
+        shop = self.model.shop
+        for i, item in enumerate(shop.items):
+            iy = by + 16 + i * 14
+            is_sel = (i == shop.cursor)
+            can = self.model.exp >= item.cost
+            fg = 10 if can else 8
+            if is_sel:
+                pyxel.rect(bx + 2, iy - 1, bw - 4, 12, 0)
+                pyxel.rectb(bx + 2, iy - 1, bw - 4, 12, 9)
+            pyxel.text(bx + 6, iy, item.label, 7 if is_sel else fg)
+            cost_str = f"{item.cost}EXP"
+            pyxel.text(bx + bw - len(cost_str) * 4 - 6, iy, cost_str, fg)
+
+        footer = "UP/DN:select  ENTER:buy  ESC:back"
+        pyxel.text(bx + bw // 2 - len(footer) * 2, by + bh - 10, footer, 6)
+
+    def _draw_special_ammo_hud(self) -> None:
+        parts = []
+        active = self.model.active_special
+        if self.model.sniper_ammo > 0:
+            parts.append((f"SNP:{self.model.sniper_ammo}", active == "sniper"))
+        if self.model.bomb_ammo > 0:
+            parts.append((f"BOM:{self.model.bomb_ammo}", active == "bomb"))
+        if not parts:
+            return
+        x = 2
+        pyxel.text(x, 11, "X> ", 9)
+        x += 12
+        for label, is_active in parts:
+            color = 10 if is_active else 6
+            text = f"[{label}]" if is_active else label
+            pyxel.text(x, 11, text, color)
+            x += (len(text) + 1) * 4
 
     def _draw_hud(self) -> None:
         sw = pyxel.width
@@ -482,6 +721,9 @@ class GameView:
         label = f"AMMO:{s.color.upper()}"
         pyxel.text(sw - len(label) * 4 - 2, 2, label, COLOR_PALETTE[s.color])
 
+        self._draw_special_ammo_hud()
+
+        pyxel.text(2, pyxel.height - 24, "! Sab",   10)
         pyxel.text(2, pyxel.height - 16, "+ Regen", 11)
         pyxel.text(2, pyxel.height - 8,  "* Cham",  10)
 
@@ -494,16 +736,9 @@ class GameView:
         self._draw_music_button()
 
     def _draw_music_button(self) -> None:
-        ON_TEXT = "[ON]"
-        OFF_TEXT = "[OFF]"
-        MUSIC_TEXT = "MUSIC <M>"
-        
-        state_text = ON_TEXT if self.controller._bgm_playing else OFF_TEXT
-        display = f"{MUSIC_TEXT}: {state_text}"
-
+        music_on = self.controller._bgm_playing or self.controller._menu_bgm_playing
+        state_text = "[ON]" if music_on else "[OFF]"
+        display = f"MUSIC <M>: {state_text}"
         sw = pyxel.width
-        color = 11 if self.controller._bgm_playing else 8
+        color = 11 if music_on else 8
         pyxel.text(sw // 2 - len(display) * 2 + 45, 2, display, color)
-
-
-            
