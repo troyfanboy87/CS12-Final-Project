@@ -1,4 +1,5 @@
 import math
+import random
 from typing import Callable, List, Optional
 
 import pyxel
@@ -214,7 +215,24 @@ class CollisionSystem:
                     if not e.alive:
                         self._on_kill(e)
                     break 
-
+    
+    def resolve_hearts(self, bullets: List[Bullet], hearts: list) -> int:
+        lives_gained = 0
+        for b in bullets:
+            if not b.alive:
+                continue
+            for h in hearts:
+                if not h.alive:
+                    continue
+                dx = b.x - h.x
+                dy = b.y - h.y
+                if dx*dx + dy*dy <= 64:
+                    b.kill()
+                    h.kill()
+                    lives_gained += 1
+                    break
+        return lives_gained
+    
 #game controller
 class GameController:
     SHOOT_COOLDOWN_FRAMES = 6
@@ -290,6 +308,9 @@ class GameController:
         
         self.model.maybe_spawn_enemy()
 
+        if self.model.maybe_spawn_heart():
+            self._try_place_heart()
+
         self._handle_aim_and_color()
 
         if self._shoot_cd > 0:
@@ -307,6 +328,7 @@ class GameController:
         self._update_enemies()
 
         self.collisions.resolve(self.model.bullets, self.model.enemies)
+        self._update_hearts()
 
         self.model.bullets = [b for b in self.model.bullets if b.alive]
         self.model.enemies = [e for e in self.model.enemies if e.alive]
@@ -488,9 +510,53 @@ class GameController:
                 self.model.lives -= 1
                 self.sound.life_lost()
                 e.escaped = False  
+    
+    def _update_hearts(self) -> None:
+        s = self.model.shooter
+
+        for heart in self.model.hearts:
+            if heart.alive:
+                heart.update()
+        
+        lives_gained = self.collisions.resolve_hearts(
+            self.model.bullets, self.model.hearts
+        )
+
+        if lives_gained:
+            self.model.lives += 1
+            pyxel.play(CHAN_SFX_B, SFX_UPGRADE)
+        
+        self.model.hearts = [heart for heart in self.model.hearts if heart.alive]
+    
+    def _try_place_heart(self) -> None:
+        cs = self.settings["cell_size"]
+        sw = self.settings["screen_width"]
+        sh = self.settings["screen_height"]
+        for _ in range(30):
+            x = random.randint(1, sw // cs - 2) * cs + cs // 2
+            y = random.randint(1, sh // cs - 1) * cs + cs // 2
+            if self._is_clear_of_paths(x, y):
+                self.model.place_heart(x, y)
+                return
+
+    def _is_clear_of_paths(self, x: float, y: float, min_dist: int = 20) -> bool:
+        for path in self.model.active_paths():
+            for i in range(1, len(path.waypoints)):
+                x0, y0 = path.waypoints[i - 1]
+                x1, y1 = path.waypoints[i]
+                dx, dy = x1 - x0, y1 - y0
+                if dx == 0 and dy == 0:
+                    dist = math.hypot(x - x0, y - y0)
+                else:
+                    t = max(0.0, min(1.0, ((x - x0)*dx + (y - y0)*dy) / (dx*dx + dy*dy)))
+                    dist = math.hypot(x - (x0 + t*dx), y - (y0 + t*dy))
+                if dist < min_dist:
+                    return False
+        return True
+    
 
     def _on_enemy_killed(self, enemy: Enemy) -> None:
-        self.model.exp += enemy.exp_value
+        self.model.exp = max(0, self.model.exp + enemy.exp_value)
         self.sound.kill()
 
 
@@ -504,6 +570,8 @@ class GameController:
         if tower is not None:
             self.sound.place()
             self._selected_tower = tower
+    
+    
 
     def _cursor_cell_center(self) -> tuple[float, float]:
         cs = self.settings["cell_size"]

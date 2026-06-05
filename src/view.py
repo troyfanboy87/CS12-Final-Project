@@ -8,6 +8,7 @@ from .model import (
     DIRECTION_VECTORS,
     ENEMY_RADIUS,
     GameState,
+    Ghost,
     Regenerator,
     RoundType
 )
@@ -103,6 +104,7 @@ class GameView:
         self._draw_grid()
         self._draw_paths()
         self._draw_towers()
+        self._draw_hearts()
         self._draw_enemies()
         self._draw_bullets()
         self._draw_shooter()
@@ -339,12 +341,16 @@ class GameView:
             ex, ey = int(e.x), int(e.y)
 
             if self._sprites_loaded:
-                try:
-                    row = COLOR_ORDER.index(e.color)
-                except ValueError:
-                    row = 0
-                sx = 0
-                sy = row * _SPRITE_H
+                if isinstance(e, Ghost):
+                    sx = 0
+                    sy = 6 * _SPRITE_H
+                else:
+                    try:
+                        row = COLOR_ORDER.index(e.color)
+                    except ValueError:
+                        row = 0
+                    sx = 0
+                    sy = row * _SPRITE_H
                 draw_x = ex - _SPRITE_W // 2
                 draw_y = ey - _SPRITE_H // 2
                 pyxel.blt(draw_x, draw_y, 0, sx, sy, _SPRITE_W, _SPRITE_H, 0)
@@ -386,6 +392,32 @@ class GameView:
             badge_color = 10 if (pyxel.frame_count // 15) % 2 == 0 else 7
             for px, py in tips[phase]:
                 pyxel.pset(px, py, badge_color)
+    
+    def _draw_hearts(self) -> None:
+        _SPRITE_W = 8
+        _SPRITE_H = 8
+        sx = 0
+        sy = 7 * _SPRITE_H
+
+        for h in self.model.hearts:
+            if not h.alive:
+                continue
+            hx, hy = int(h.x), int(h.y)
+            if self._sprites_loaded:
+                pyxel.blt(
+                    hx - _SPRITE_W // 2,
+                    hy - _SPRITE_H // 2,
+                    0, sx, sy, _SPRITE_W, _SPRITE_H, 0
+                )
+            else:
+                pyxel.circb(hx, hy, 5, 8)
+        
+        for h in self.model.hearts:
+            if h.alive and (pyxel.frame_count // 20) % 2 == 0:
+                hx, hy = int(h.x), int(h.y)
+                pyxel.rectb(hx - 5, hy - 5, 10, 10, 7)
+
+
 
     def _draw_bullets(self) -> None:
         for b in self.model.bullets:

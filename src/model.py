@@ -330,6 +330,54 @@ class Chameleon(Enemy):
                 self.color = random.choice(choices)
 
 
+class Ghost(Enemy):
+    KIND: str = "ghost"
+
+    def __init__(
+            self,
+            hp: int,
+            speed: float,
+            path_index: int = 0,
+    ):
+        super().__init__(
+            color="red",
+            hp=hp,
+            speed=speed,
+            exp_value= -5,
+            path_index=path_index,
+        )
+    
+    def take_damage(self, bullet_color: str, amount: int = 1) -> bool:
+        if self.in_tunnel:
+            return False
+        
+        self.hp -= amount
+
+        if self.hp <= 0:
+            self.kill()
+        
+        return True
+    
+class Heart(Entity):
+    def __init__(self, x: float, y: float, lifetime: int = 600):
+        super().__init__(x, y)
+        self.lifetime = lifetime
+    
+    def update(self) -> None:
+        self.lifetime -= 1
+        
+        if self.lifetime <= 0:
+            self.kill()
+    
+    @staticmethod
+    def max_hearts_per_round(round_number: int) -> int:
+        if round_number <= 5:
+            return 0
+        elif round_number <= 12:
+            return 1
+        else:
+            return 2
+
 class Tower(Entity):
     FIRE_COOLDOWN_FRAMES = 30
 
@@ -381,6 +429,7 @@ class EnemyFactory:
         self.register("normal",      self._build_normal)
         self.register("regenerator", self._build_regenerator)
         self.register("chameleon",   self._build_chameleon)
+        self.register("ghost", self._build_ghost)
 
     def register(self, kind: str, builder: Callable[..., Enemy]) -> None:
         self._builders[kind] = builder
@@ -445,6 +494,14 @@ class EnemyFactory:
             path_index=path_index,
         )
 
+    def _build_ghost(self, *, color: str, path_index: int,
+                     current_round: int = 1) -> Ghost:
+        return Ghost(
+            hp=self._hp_for_round(current_round),
+            speed=self.settings["enemy_speed"],
+            path_index=path_index,
+        )
+
     def pick_kind(self, current_round: int) -> str:
         # Rounds 1-3: normals only → gradually introduce specials
         # Rounds 4-6: mix in regenerators and chameleons
@@ -452,16 +509,16 @@ class EnemyFactory:
         # Rounds 10-12: max difficulty — fewest normals
         if current_round <= 1:
             pool = ["normal"] * 10
-        elif current_round == 2:
-            pool = ["normal"] * 7 + ["regenerator"] * 3
         elif current_round == 3:
+            pool = ["normal"] * 8 + ["regenerator"] * 2
+        elif current_round == 4:
             pool = ["normal"] * 6 + ["regenerator"] * 2 + ["chameleon"] * 2
         elif current_round <= 6:
-            pool = ["normal"] * 4 + ["regenerator"] * 3 + ["chameleon"] * 3
+            pool = ["normal"] * 4 + ["regenerator"] * 3 + ["chameleon"] * 2 + ["ghost"] * 1
         elif current_round <= 9:
-            pool = ["normal"] * 3 + ["regenerator"] * 3 + ["chameleon"] * 4
+            pool = ["normal"] * 3 + ["regenerator"] * 3 + ["chameleon"] * 3 + ["ghost"] * 1
         else:
-            pool = ["normal"] * 2 + ["regenerator"] * 4 + ["chameleon"] * 4
+            pool = ["normal"] * 2 + ["regenerator"] * 3 + ["chameleon"] * 3 + ["ghost"] * 2
         return random.choice(pool)
 
     def pick_color(self) -> str:
@@ -649,8 +706,11 @@ class GameModel:
         self.enemies: List[Enemy] = []
         self.bullets: List[Bullet] = []
         self.towers:  List[Tower]  = []
+        self.hearts: List[Heart] = []
 
         self.enemy_factory = EnemyFactory(settings)
+        self._hearts_spawned: int = 0
+        self._heart_spawn_timer: int = 0
         
         if mode_type == RoundType.ENDLESS:
             chosen_mode = EndlessMode()
@@ -700,6 +760,9 @@ class GameModel:
         self.enemies.clear()
         self.bullets.clear()
         if self.round_manager.start_next_round():
+            self.hearts.clear()
+            self._hearts_spawned = 0
+            self._heart_spawn_timer = 120
             self.state = GameState.PLAYING
             if self.shooter.color_idx >= self.round_data.active_colors:
                 self.shooter.color_idx = 0
@@ -720,7 +783,22 @@ class GameModel:
         enemy = self.round_manager.maybe_spawn(len(self.active_paths()))
         if enemy is not None:
             self.enemies.append(enemy)
-    
+
+    def maybe_spawn_heart(self) -> bool:
+        if self._hearts_spawned >= Heart.max_hearts_per_round(self.current_round):
+            return False
+        self._heart_spawn_timer -= 1
+        if self._heart_spawn_timer > 0:
+            return False
+
+        self._heart_spawn_timer = 500
+        return True
+
+    def place_heart(self, x: float, y: float) -> None:
+        self.hearts.append(Heart(x, y))
+        self._hearts_spawned += 1
+        self._heart_spawn_timer = 300
+
     def active_paths(self) -> List[Path]:
         if self.state == GameState.BUILDING:
             return self.paths[:self.preview_next_round_data.path_count]
