@@ -5,8 +5,10 @@ from typing import Callable, List, Optional
 import pyxel
 
 from .model import (
+    BombBullet,
     Bullet,
     BULLET_RADIUS,
+    BurstTower,
     COLOR_ORDER,
     Direction,
     Enemy,
@@ -14,6 +16,9 @@ from .model import (
     GameModel,
     GameState,
     RoundType,
+    Saboteur,
+    SlowTower,
+    SniperBullet,
     Tower,
 )
 
@@ -23,10 +28,17 @@ SFX_KILL       = 1
 SFX_PLACE      = 2
 SFX_LIFE_LOST  = 3
 SFX_UPGRADE    = 4
+SFX_SHOP_BUY   = 6
+SFX_SABOTEUR   = 7
+SFX_SPECIAL    = 8
 
-BGM_MELODY_SLOT = 10
-BGM_BASS_SLOT   = 11
-BGM_TRACK       = 0
+BGM_MELODY_SLOT  = 10
+BGM_BASS_SLOT    = 11
+BGM_TRACK        = 0
+
+MENU_MELODY_SLOT = 12
+MENU_BASS_SLOT   = 13
+MENU_TRACK       = 1
 
 CHAN_BGM_MELODY = 0
 CHAN_BGM_BASS   = 1
@@ -45,8 +57,12 @@ class SoundManager:
         pyxel.sounds[SFX_PLACE].set("c2g2c3",     "s", "5", "n", 15)
         pyxel.sounds[SFX_LIFE_LOST].set("c1",     "n", "7", "f", 8)
         pyxel.sounds[SFX_UPGRADE].set("c3e3g3c4", "s", "5", "n", 18)
+        pyxel.sounds[SFX_SHOP_BUY].set("c3e3g3",  "s", "6", "n", 14)
+        pyxel.sounds[SFX_SABOTEUR].set("b1g1e1",   "n", "7", "f", 12)
+        pyxel.sounds[SFX_SPECIAL].set("a2e3a3",    "p", "6", "n", 16)
 
     def _setup_music(self) -> None:
+        # Game BGM — upbeat loop
         pyxel.sounds[BGM_MELODY_SLOT].set(
             "c2 e2 g2 c3 e2 g2 c3 e3",
             "p", "3", "n", 22
@@ -56,20 +72,39 @@ class SoundManager:
             "t", "4", "n", 22
         )
         pyxel.musics[BGM_TRACK].set(
-            [BGM_MELODY_SLOT],
-            [BGM_BASS_SLOT],    
-            [],                
-            [],              
+            [BGM_MELODY_SLOT], [BGM_BASS_SLOT], [], []
+        )
+        # Menu BGM — slower, more ambient feel
+        pyxel.sounds[MENU_MELODY_SLOT].set(
+            "c3 r r e3 r r g3 r r e3 r r c3 r r r",
+            "t", "3", "f", 30
+        )
+        pyxel.sounds[MENU_BASS_SLOT].set(
+            "c1 r r r g1 r r r a1 r r r f1 r r r",
+            "s", "2", "f", 30
+        )
+        pyxel.musics[MENU_TRACK].set(
+            [MENU_MELODY_SLOT], [MENU_BASS_SLOT], [], []
         )
 
-    def shoot(self):     pyxel.play(CHAN_SFX_A, SFX_SHOOT)
-    def kill(self):      pyxel.play(CHAN_SFX_B, SFX_KILL)
-    def place(self):     pyxel.play(CHAN_SFX_A, SFX_PLACE)
-    def life_lost(self): pyxel.play(CHAN_SFX_B, SFX_LIFE_LOST)
-    def upgrade(self):   pyxel.play(CHAN_SFX_B, SFX_UPGRADE)
+    def shoot(self):      pyxel.play(CHAN_SFX_A, SFX_SHOOT)
+    def kill(self):       pyxel.play(CHAN_SFX_B, SFX_KILL)
+    def place(self):      pyxel.play(CHAN_SFX_A, SFX_PLACE)
+    def life_lost(self):  pyxel.play(CHAN_SFX_B, SFX_LIFE_LOST)
+    def upgrade(self):    pyxel.play(CHAN_SFX_B, SFX_UPGRADE)
+    def shop_buy(self):   pyxel.play(CHAN_SFX_A, SFX_SHOP_BUY)
+    def saboteur(self):   pyxel.play(CHAN_SFX_B, SFX_SABOTEUR)
+    def special(self):    pyxel.play(CHAN_SFX_A, SFX_SPECIAL)
 
     def start_bgm(self):
+        pyxel.stop(CHAN_BGM_MELODY)
+        pyxel.stop(CHAN_BGM_BASS)
         pyxel.playm(BGM_TRACK, loop=True)
+
+    def start_menu_bgm(self):
+        pyxel.stop(CHAN_BGM_MELODY)
+        pyxel.stop(CHAN_BGM_BASS)
+        pyxel.playm(MENU_TRACK, loop=True)
 
     def stop_bgm(self):
         pyxel.stop(CHAN_BGM_MELODY)
@@ -116,6 +151,11 @@ class InputHandler:
     def wants_endless_mode() -> bool:
         return pyxel.btnp(pyxel.KEY_2)
     
+    @staticmethod
+    def wants_controls() -> bool:
+        """K key: toggle controls overlay on menu."""
+        return pyxel.btnp(pyxel.KEY_K)
+
     @staticmethod
     def wants_music() -> bool:
         return pyxel.btnp(pyxel.KEY_M)
@@ -182,6 +222,26 @@ class InputHandler:
                 return direction
         return None
 
+    @staticmethod
+    def wants_shop() -> bool:
+        return pyxel.btnp(pyxel.KEY_O)
+
+    @staticmethod
+    def wants_cycle_special() -> bool:
+        return pyxel.btnp(pyxel.KEY_X)
+
+    @staticmethod
+    def shop_up() -> bool:
+        return pyxel.btnp(pyxel.KEY_UP)
+
+    @staticmethod
+    def shop_down() -> bool:
+        return pyxel.btnp(pyxel.KEY_DOWN)
+
+    @staticmethod
+    def shop_buy() -> bool:
+        return pyxel.btnp(pyxel.KEY_RETURN)
+
 
 #handles when bullet collides with enemy
 class CollisionSystem:
@@ -202,20 +262,38 @@ class CollisionSystem:
             for e in enemies:
                 if not e.alive:
                     continue
-                if e.in_tunnel: 
+                if e.in_tunnel:
                     continue
                 dx = b.x - e.x
                 dy = b.y - e.y
                 if dx * dx + dy * dy > self.HIT_RADIUS_SQ:
                     continue
                 if e.take_damage(b.color):
-                    b.kill()
+                    if isinstance(b, BombBullet) and not b.exploded:
+                        b.exploded = True
+                        self._splash(b, enemies)
+                        b.kill()
+                    elif not isinstance(b, SniperBullet):
+                        b.kill()
                     if self._on_hit:
                         self._on_hit(e, b)
                     if not e.alive:
                         self._on_kill(e)
-                    break 
-    
+                    if not isinstance(b, SniperBullet):
+                        break
+
+    def _splash(self, bomb: "BombBullet", enemies: List[Enemy]) -> None:
+        r2 = bomb.SPLASH_RADIUS ** 2
+        for e in enemies:
+            if not e.alive or e.in_tunnel:
+                continue
+            dx = bomb.x - e.x
+            dy = bomb.y - e.y
+            if dx * dx + dy * dy <= r2:
+                if e.take_damage(bomb.color):
+                    if not e.alive:
+                        self._on_kill(e)
+
     def resolve_hearts(self, bullets: List[Bullet], hearts: list) -> int:
         lives_gained = 0
         for b in bullets:
@@ -232,7 +310,7 @@ class CollisionSystem:
                     lives_gained += 1
                     break
         return lives_gained
-    
+
 #game controller
 class GameController:
     SHOOT_COOLDOWN_FRAMES = 6
@@ -248,20 +326,23 @@ class GameController:
         self._shoot_cd = 0
         self._selected_tower: Optional[Tower] = None
         self._bgm_playing = False
+        self._menu_bgm_playing = False
+        self._show_controls = False   # toggle for controls overlay on menu
 
     def update(self) -> None:
+        # Start menu BGM on first frame
+        if not self._menu_bgm_playing and not self._bgm_playing:
+            self.sound.start_menu_bgm()
+            self._menu_bgm_playing = True
+
         if self.input.wants_quit():
             pyxel.quit()
         
-        if (self.input.wants_back() and
-            self.model.state not in (GameState.MENU, GameState.LEADERBOARD)
-            ):
-            self.model = GameModel(self.settings)
-            self.model.state = GameState.MENU
-            self.sound.stop_bgm()
-            self._bgm_playing = False
-            self._selected_tower = None
-            self._shoot_cd = 0
+        if self.input.wants_back():
+            if self.model.state == GameState.SHOP:
+                self.model.state = GameState.CHOOSE
+            elif self.model.state not in (GameState.MENU, GameState.LEADERBOARD):
+                self._go_to_menu()
         
         if self.input.wants_music():
             self._toggle_bgm()
@@ -277,18 +358,30 @@ class GameController:
             self._update_choose()
         elif state == GameState.BUILDING:
             self._update_building()
+        elif state == GameState.SHOP:
+            self._update_shop()
         elif state == GameState.LEADERBOARD:
             self._update_leaderboard()
         elif state in (GameState.GAME_OVER, GameState.WIN):
             self._update_endgame()
 
     def _update_menu(self) -> None:
+        # Ensure menu BGM plays when on menu (e.g. after returning from game)
+        if not self._menu_bgm_playing:
+            self.sound.start_menu_bgm()
+            self._menu_bgm_playing = True
+
+        if self.input.wants_controls():
+            self._show_controls = not self._show_controls
+
         if self.input.wants_campaign_mode():
+            self._show_controls = False
             self.model = GameModel(self.settings, mode_type=RoundType.CAMPAIGN)
             self.model.start_next_round()
             self._ensure_bgm_playing()
 
         elif self.input.wants_endless_mode():
+            self._show_controls = False
             self.model = GameModel(self.settings, mode_type=RoundType.ENDLESS)
             self.model.start_next_round()
             self._ensure_bgm_playing()
@@ -313,6 +406,9 @@ class GameController:
 
         self._handle_aim_and_color()
 
+        if self.input.wants_cycle_special():
+            self.model.cycle_special()
+
         if self._shoot_cd > 0:
             self._shoot_cd -= 1
         if self.input.fire_held() and self._shoot_cd == 0:
@@ -320,6 +416,8 @@ class GameController:
             self._shoot_cd = self.SHOOT_COOLDOWN_FRAMES
 
         self._handle_tower_direction_input()
+
+        self._apply_slow_towers()
 
         self._update_towers()
 
@@ -354,12 +452,28 @@ class GameController:
                     self._selected_tower = None
 
     def _update_choose(self) -> None:
-        if self.input.wants_build():
+        if self.input.wants_shop():
+            self.model.state = GameState.SHOP
+        elif self.input.wants_build():
             self.model.state = GameState.BUILDING
         elif self.input.wants_next_round():
             if not getattr(self.model, "is_endless", False):
                 self._selected_tower = None
             self.model.start_next_round()
+
+    def _update_shop(self) -> None:
+        if self.input.shop_up():
+            self.model.shop.move_cursor(-1)
+        elif self.input.shop_down():
+            self.model.shop.move_cursor(1)
+        elif self.input.shop_buy():
+            item = self.model.shop.selected_item()
+            if self.model.shop_buy(item):
+                self.sound.shop_buy()
+                if item.key in ("slow_tower", "burst_tower"):
+                    ttype = "slow" if item.key == "slow_tower" else "burst"
+                    self.model._pending_tower_type = ttype
+                    self.model.state = GameState.BUILDING
 
     def _update_building(self) -> None:
         if self.input.wants_place_tower():
@@ -377,24 +491,21 @@ class GameController:
             self.model.start_next_round()
 
     def _update_endgame(self) -> None:
-        if self.input.wants_restart():
-            self.model = GameModel(self.settings)
-            self.model.state = GameState.MENU
-            self.sound.stop_bgm()
-            self._bgm_playing = False
-            self._selected_tower = None
-            self._shoot_cd = 0
-            return 
-        
+        # Type name freely — R is just the letter R now
         for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
             if pyxel.btnp(getattr(pyxel, f"KEY_{c}")):
                 self.model.player_name += c
-        
+
         if pyxel.btnp(pyxel.KEY_BACKSPACE):
             self.model.player_name = self.model.player_name[:-1]
 
         if pyxel.btnp(pyxel.KEY_RETURN):
             self._save_score()
+            return
+
+        # ESC returns to menu without saving
+        if self.input.wants_back():
+            self._go_to_menu()
 
     def _update_paused(self):
         if self.input.wants_pause():
@@ -404,34 +515,86 @@ class GameController:
         if self.input.wants_back():
             self.model.state = GameState.MENU
 
+    def _go_to_menu(self) -> None:
+        self.model = GameModel(self.settings)
+        self.model.state = GameState.MENU
+        self.sound.stop_bgm()
+        self._bgm_playing = False
+        self._menu_bgm_playing = False   # will restart on next _update_menu
+        self._selected_tower = None
+        self._shoot_cd = 0
+        self._show_controls = False
+
     def _save_score(self):
         score = self.model.exp
-        name = self.model.player_name or "AAA"
-        mode = "endless" if self.model.is_endless else "campaign"
+        name  = self.model.player_name.strip() or "AAA"
+        mode  = "endless" if self.model.is_endless else "campaign"
 
-        with open("leaderboard.txt", "a") as f:
-            f.write(f"{mode},{name},{score}\n")
-        
+        # Load all existing entries
+        entries = self._load_all_scores()
+
+        # Find existing entry with same name+mode and only keep if new score is higher
+        existing_idx = None
+        for i, (m, n, s) in enumerate(entries):
+            if m == mode and n.lower() == name.lower():
+                existing_idx = i
+                break
+
+        if existing_idx is not None:
+            _, _, old_score = entries[existing_idx]
+            if score > old_score:
+                entries[existing_idx] = (mode, name, score)
+            # else keep old (higher) score, don't overwrite
+        else:
+            entries.append((mode, name, score))
+
+        # Write back
+        with open("leaderboard.txt", "w") as f:
+            for m, n, s in entries:
+                f.write(f"{m},{n},{s}\n")
+
         self.model.state = GameState.LEADERBOARD
-    
-    def _load_scores(self):
-        scores = []
-        try: 
+
+    def _load_all_scores(self) -> list:
+        """Load every entry from leaderboard.txt, no filtering."""
+        entries = []
+        try:
             with open("leaderboard.txt", "r") as f:
                 for line in f:
-                    mode, name, score = line.strip().split(",")
-                    scores.append((mode, name, int(score)))
-
+                    parts = line.strip().split(",", 2)
+                    if len(parts) != 3:
+                        continue
+                    mode, name, score = parts
+                    try:
+                        entries.append((mode, name, int(score)))
+                    except ValueError:
+                        pass
         except FileNotFoundError:
             pass
-        return sorted(scores, key=lambda x: x[2], reverse = True)[:10]
+        return entries
+
+    def _load_scores(self):
+        """Return top-10 sorted entries for display."""
+        return sorted(self._load_all_scores(),
+                      key=lambda x: x[2], reverse=True)[:10]
 
     def _ensure_bgm_playing(self) -> None:
         if not self._bgm_playing:
             self.sound.start_bgm()
             self._bgm_playing = True
+            self._menu_bgm_playing = False
 
     def _toggle_bgm(self):
+        # If on menu, toggle menu BGM
+        if self.model.state == GameState.MENU:
+            if self._menu_bgm_playing:
+                self.sound.stop_bgm()
+                self._menu_bgm_playing = False
+            else:
+                self.sound.start_menu_bgm()
+                self._menu_bgm_playing = True
+            return
+        # In-game BGM toggle
         if self._bgm_playing:
             self.sound.stop_bgm()
             self._bgm_playing = False
@@ -454,10 +617,55 @@ class GameController:
 
     def _fire_player_bullet(self) -> None:
         speed = self.settings["bullet_speed"]
+        if self.model.active_special:
+            special = self.model.produce_special_bullet(speed)
+            if special is not None:
+                self.model.bullets.append(special)
+                self.sound.special()
+                return
         bullets = self.model.shooter.produce_bullets(speed)
         self.model.bullets.extend(bullets)
         self.sound.shoot()
 
+    def _apply_slow_towers(self) -> None:
+        slow_towers = [t for t in self.model.towers
+                       if isinstance(t, SlowTower) and not t.is_disabled]
+        if not slow_towers:
+            return
+        base_speed = self.settings["enemy_speed"]
+        for e in self.model.enemies:
+            if not e.alive:
+                continue
+            in_range = any(
+                math.hypot(t.x - e.x, t.y - e.y) <= SlowTower.SLOW_RADIUS
+                for t in slow_towers
+            )
+            if in_range:
+                e.speed = base_speed * SlowTower.SLOW_FACTOR
+            else:
+                if e.speed < base_speed:
+                    e.speed = base_speed
+
+    def _on_enemy_killed(self, enemy: Enemy) -> None:
+        self.model.exp = max(0, self.model.exp + enemy.exp_value)
+        self.sound.kill()
+        if isinstance(enemy, Saboteur):
+            self.sound.saboteur()
+            for t in self.model.towers:
+                if math.hypot(t.x - enemy.x, t.y - enemy.y) <= Saboteur.SABOTAGE_RADIUS:
+                    t.disable(Saboteur.SABOTAGE_FRAMES)
+
+    def _try_place_tower(self) -> None:
+        cx, cy = self._cursor_cell_center()
+        if not self._is_legal_tower_spot(cx, cy):
+            return
+        ttype = self.model._pending_tower_type
+        tower = self.model.place_tower(cx, cy, tower_type=ttype)
+        if tower is not None:
+            self.sound.place()
+            self._selected_tower = tower
+            if ttype != "normal":
+                self.model._pending_tower_type = "normal"
 
     def _handle_tower_direction_input(self) -> None:
         """Phase 4a: WASD sets the firing direction of the SELECTED tower."""
@@ -553,24 +761,6 @@ class GameController:
                 if dist < min_dist:
                     return False
         return True
-    
-
-    def _on_enemy_killed(self, enemy: Enemy) -> None:
-        self.model.exp = max(0, self.model.exp + enemy.exp_value)
-        self.sound.kill()
-
-
-    def _try_place_tower(self) -> None:
-        cx, cy = self._cursor_cell_center()
-        if not self._is_legal_tower_spot(cx, cy):
-            return
-        if not self.model.can_afford_tower():
-            return
-        tower = self.model.place_tower(cx, cy)
-        if tower is not None:
-            self.sound.place()
-            self._selected_tower = tower
-    
     
 
     def _cursor_cell_center(self) -> tuple[float, float]:
