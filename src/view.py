@@ -17,6 +17,7 @@ from .model import (
     SlowTower,
     SniperBullet,
     SHOP_ITEMS,
+    TimeClock,
 )
 
 
@@ -50,6 +51,7 @@ class GameView:
         elif state == GameState.PLAYING:
             self._draw_play_field()
             self._draw_hud()
+            self._draw_intro()
         elif state == GameState.CHOOSE:
             self._draw_play_field()
             self._draw_choose_overlay()
@@ -164,12 +166,14 @@ class GameView:
         panel_items = [
             ("[1] Campaign Mode",  11),
             ("[2] Endless Mode",   12),
+            ("[3] Time Attack",    9),
             ("[L] Leaderboard",    7),
             ("[K] Controls",       6),
             ("[M] Toggle Music",   6),
+            ("[Q] Quit Game",      6),
         ]
         pw = 120
-        ph = len(panel_items) * 12 + 10
+        ph = len(panel_items) * 12 + 5
         total_h = line_h + 4 + line_h + 10 + ph + 6 + 6
         start_y = (sh - total_h) // 2
 
@@ -202,7 +206,7 @@ class GameView:
         for i, (label, color) in enumerate(panel_items):
             lx = sw // 2 - len(label) * 2
             ly = py + 5 + i * 12
-            if i < 2 and (fc // 18) % 2 == 1:
+            if i < 3 and (fc // 18) % 2 == 1:
                 continue
             pyxel.text(lx, ly, label, color)
 
@@ -260,9 +264,84 @@ class GameView:
         self._draw_paths()
         self._draw_towers()
         self._draw_hearts()
+        self._draw_clocks()
         self._draw_enemies()
         self._draw_bullets()
         self._draw_shooter()
+
+    def _draw_intro(self) -> None:
+        if self.controller._intro_timer <= 0:
+            return
+
+        sw, sh = pyxel.width, pyxel.height
+        fc = pyxel.frame_count
+        mode = self.model.mode_type
+
+        for y in range(0, sh, 2):
+            for x in range(0, sw, 2):
+                pyxel.pset(x, y, 1)
+
+        if mode == RoundType.CAMPAIGN:
+            title  = "CAMPAIGN MODE"
+            title_color = 5
+            lines = [
+                ("Survive all 14 rounds to win!",           6),
+                ("",                                        0),
+                ("Shoot enemies to gain EXP for towers.",   7),
+                ("Towers unlocked for Round 3.",            7),
+                ("Build, upgrade, and aim well.",           7),
+                ("Collect hearts to gain lives!",           10),
+                ("",                                        0),
+                ("Enemies grow stronger each round.",       7),
+                ("Don't let them escape!",                  7),
+            ]
+
+        elif mode == RoundType.ENDLESS:
+            title  = "ENDLESS MODE"
+            title_color = 5
+            lines = [
+                ("Survive as many rounds as you can!",  6),
+                ("",                                    0),
+                ("Build towers between rounds.",        7),
+                ("Collect hearts to gain lives!",       10),
+                ("",                                    0),
+                ("Speed and enemy count rise",          7),
+                ("with every round. Good luck!",        7),
+            ]
+
+        else:
+            title  = "TIME ATTACK"
+            title_color = 5
+            lines = [
+                ("You have 60 seconds.",        6),
+                ("Try to kill all enemies!",    6),
+                ("",                            0),
+                ("Shoot enemies to earn EXP.",  7),
+                ("Shoot clocks to add +5s!",   10),
+                ("",                            0),
+                ("Beat the clock!",             7),
+            ]
+
+        pw = 160
+        ph = len(lines) * 8 + 44
+        bx = sw // 2 - pw // 2
+        by = sh // 2 - ph // 2
+        pyxel.rect(bx, by, pw, ph, 0)
+        pyxel.rectb(bx, by, pw, ph, 13)
+
+        tx = sw // 2 - len(title) * 2
+        pyxel.text(tx, by + 8, title, title_color)
+
+        pyxel.line(bx + 4, by + 17, bx + pw - 4, by + 17, 13)
+
+        for i, (text, color) in enumerate(lines):
+            if text:
+                lx = sw // 2 - len(text) * 2
+                pyxel.text(lx, by + 24 + i * 8, text, color)
+
+        if (fc // 20) % 2 == 0:
+            hint = "Click or wait to start..."
+            pyxel.text(sw // 2 - len(hint) * 2, by + ph - 10, hint, 13)
 
     def _draw_choose_overlay(self) -> None:
         if self.model.state == GameState.BUILDING:
@@ -397,12 +476,13 @@ class GameView:
 
         options = [
             "Resume [P]",
+            "Restart [R]",
             "Back to Menu [ESC]",
             "Quit Game [Q]"
         ]
 
         panel_w = 100
-        panel_h = 50
+        panel_h = 60
         px = sw // 2 - panel_w // 2
         py = sh // 2 - panel_h // 2
 
@@ -589,7 +669,27 @@ class GameView:
                 hx, hy = int(h.x), int(h.y)
                 pyxel.rectb(hx - 5, hy - 5, 10, 10, 7)
 
+    def _draw_clocks(self) -> None:
+        _SPRITE_W = 8
+        _SPRITE_H = 8
+        sx = 0
+        sy = 8 * _SPRITE_H
 
+        for c in self.model.time_clocks:
+            if not c.alive:
+                continue
+            cx, cy = int(c.x), int(c.y)
+            if self._sprites_loaded:
+                pyxel.blt(cx - _SPRITE_W // 2, cy - _SPRITE_H // 2,
+                        0, sx, sy, _SPRITE_W, _SPRITE_H, 0)
+            else:
+                pyxel.circb(cx, cy, 5, 7)
+                pyxel.line(cx, cy - 3, cx, cy, 7)
+                pyxel.line(cx, cy, cx + 3, cy, 7)
+
+            if (pyxel.frame_count // 15) % 2 == 0:
+                pyxel.rectb(cx - 6, cy - 6, 12, 12, 10)
+            pyxel.text(cx - 5, cy + 7, "+5s", 10)
 
     def _draw_bullets(self) -> None:
         for b in self.model.bullets:
@@ -706,16 +806,25 @@ class GameView:
     def _draw_hud(self) -> None:
         sw = pyxel.width
         pyxel.rect(0, 0, sw, 9, 1)
-        pyxel.text(2,  2, f"LIVES:{self.model.lives}", 8)
-        pyxel.text(40, 2, f"EXP:{self.model.exp}",     10)
 
-        if self.model.mode_type == RoundType.ENDLESS:
-            round_str = f"R:{self.model.current_round} (ENDLESS)"
+        if self.model.is_time_attack:
+            pyxel.text(2, 2, f"EXP:{self.model.exp}",     10)
+            secs = self.model.time_remaining_seconds
+            mins = int(secs) // 60
+            s    = int(secs) % 60
+            timer_str = f"TIME {mins}:{s:02d}"
+            t_color = 8 if secs < 10 else (10 if secs < 20 else 7)
+            if not (secs < 10 and (pyxel.frame_count // 8) % 2 == 1):
+                pyxel.text(55, 2, timer_str, t_color)
         else:
-            total = getattr(self.model, "total_rounds", 12)
-            round_str = f"R:{self.model.current_round}/{total}"
-            
-        pyxel.text(80, 2, round_str, 7)
+            pyxel.text(2,  2, f"LIVES:{self.model.lives}", 8)
+            pyxel.text(40, 2, f"EXP:{self.model.exp}",     10)
+            if self.model.mode_type == RoundType.ENDLESS:
+                round_str = f"R:{self.model.current_round} (ENDLESS)"
+            else:
+                total = getattr(self.model, "total_rounds", 12)
+                round_str = f"R:{self.model.current_round}/{total}"
+            pyxel.text(80, 2, round_str, 7)
 
         s = self.model.shooter
         label = f"AMMO:{s.color.upper()}"
@@ -723,16 +832,21 @@ class GameView:
 
         self._draw_special_ammo_hud()
 
-        pyxel.text(2, pyxel.height - 24, "! Sab",   10)
-        pyxel.text(2, pyxel.height - 16, "+ Regen", 11)
-        pyxel.text(2, pyxel.height - 8,  "* Cham",  10)
+        if self.model.is_time_attack:
+            pyxel.text(2, pyxel.height - 16, "+ Regen", 11)
+            pyxel.text(2, pyxel.height - 8,  "* Cham",  10)
+        else:
+            pyxel.text(2, pyxel.height - 32, "~ Ghost", 11)
+            pyxel.text(2, pyxel.height - 24, "! Sab",   10)
+            pyxel.text(2, pyxel.height - 16, "+ Regen", 11)
+            pyxel.text(2, pyxel.height - 8,  "* Cham",  10)
 
         sel = self.controller._selected_tower
         if sel is not None and sel in self.model.towers:
             dirname = sel.direction.value.upper()
             txt = f"SEL DIR:{dirname}"
             pyxel.text(sw - len(txt) * 4 - 2, pyxel.height - 8, txt, 7)
-        
+
         self._draw_music_button()
 
     def _draw_music_button(self) -> None:

@@ -32,6 +32,7 @@ class GameState(str, Enum):
 class RoundType(str, Enum):
     CAMPAIGN = "campaign"
     ENDLESS = "endless"
+    TIME_ATTACK = "time_attack"
 
 class Direction(str, Enum):
     UP    = "up"
@@ -430,6 +431,18 @@ class Heart(Entity):
         else:
             return 2
 
+class TimeClock(Entity):
+    SECONDS_GRANTED = 5
+
+    def __init__(self, x: float, y: float, lifetime: int = 180):
+        super().__init__(x, y)
+        self.lifetime = lifetime
+    
+    def update(self) -> None:
+        self.lifetime -= 1
+        if self.lifetime <= 0:
+            self.kill()
+
 class Tower(Entity):
     FIRE_COOLDOWN_FRAMES = 30
     TOWER_TYPE: str = "normal"
@@ -605,7 +618,8 @@ class EnemyFactory:
             path_index=path_index,
         )
 
-    def pick_kind(self, current_round: int) -> str:
+    def pick_kind(self, current_round: int,
+                allowed: Optional[List[str]] = None) -> str:
         if current_round <= 1:
             pool = ["normal"] * 10
         elif current_round == 3:
@@ -618,8 +632,10 @@ class EnemyFactory:
             pool = ["normal"] * 3 + ["regenerator"] * 2 + ["chameleon"] * 3 + ["ghost"] * 1 + ["saboteur"] * 1
         else:
             pool = ["normal"] * 2 + ["regenerator"] * 3 + ["chameleon"] * 3 + ["ghost"] * 1 + ["saboteur"] * 1
+        if allowed is not None:
+            pool = [k for k in pool if k in allowed] or ["normal"]
         return random.choice(pool)
-
+    
     def pick_color(self) -> str:
         n = self.settings["num_colors"]
         return random.choice(COLOR_ORDER[:n])
@@ -695,7 +711,7 @@ class GameMode(ABC):
 
 class CampaignMode(GameMode):
     _ROUNDS: List[RoundData] = [
-            RoundData(1, 5, 40, 0.0, 2, 1, 0),
+            RoundData(1,  5,  40, 0.0, 2, 1, 0),
             RoundData(2, 8, 38, 0.0, 3, 1, 0, True, False, True),
             RoundData(3, 10, 38, 0.0, 3, 1, 0, True, False, True),
             RoundData(4, 12, 35, 0.0, 4, 1, 0, True, False, True),
@@ -707,6 +723,8 @@ class CampaignMode(GameMode):
             RoundData(10, 18, 30, 0.4, 6, 2, 2, True, True, True),
             RoundData(11, 20, 30, 0.8, 6, 2, 2, True, True, True),
             RoundData(12, 20, 30, 1.0, 6, 2, 2, True, True, True),
+            RoundData(13, 20, 28, 1.0, 6, 2, 2, True, True, True),
+            RoundData(14, 20, 28, 1.0, 6, 2, 2, True, True, True),
         ]
 
     def get_round_data(self, round_number: int, settings: dict) -> RoundData:
@@ -745,6 +763,27 @@ class EndlessMode(GameMode):
     def max_rounds(self) -> Optional[int]:
         return None
 
+class TimeAttackMode(GameMode):
+    def get_round_data(self, round_number: int, settings: dict) -> RoundData:
+        return RoundData(
+            round_number=round_number,
+            total_enemies=999999, 
+            spawn_interval=max(8, 35 - round_number // 4),
+            speed_boost=round_number * 0.002,
+            active_colors=min(2 + round_number // 4, settings["num_colors"]),
+            path_count=2,
+            tunnels=1,
+            unlock_towers=False,
+            unlock_upgrade=False,
+            unlock_build_ui=False,
+        )
+
+    def can_continue(self, round_number: int, settings: dict) -> bool:
+        return True
+
+    def max_rounds(self) -> Optional[int]:
+        return None
+
 class RoundManager:
     def __init__(self, settings: dict, enemy_factory: EnemyFactory, game_mode: GameMode):
         self.settings = settings
@@ -769,7 +808,7 @@ class RoundManager:
     def all_rounds_finished(self) -> bool:
         return not self.mode.can_continue(self.current_round + 1, self.settings)
 
-    def maybe_spawn(self, num_paths: int) -> Optional[Enemy]:
+    def maybe_spawn(self, num_paths: int, allowed: Optional[List[str]] = None) -> Optional[Enemy]:
         if self._enemies_to_spawn <= 0:
             return None
 
@@ -785,7 +824,7 @@ class RoundManager:
 
         max_allowed_paths = min(num_paths, round_data.path_count)
         path_idx = random.randint(0, max_allowed_paths - 1)
-        kind = self.factory.pick_kind(self.current_round)
+        kind = self.factory.pick_kind(self.current_round, allowed=allowed)
         color = random.choice(COLOR_ORDER[:round_data.active_colors])
 
         enemy = self.factory.create(kind, color=color, path_index=path_idx,
@@ -841,6 +880,28 @@ class GameModel:
             ),
         ]
 
+        self.paths_dual_tunnel: List[Path] = [
+            Path(
+                waypoints=[
+                    (half,      path_a_y),
+                    (path_a_x,  path_a_y),
+                    (path_a_x,  sh - half),
+                ],
+                tunnels_in_cells=[(3, 5), (10, 13)],
+                cell_size=cs,
+            ),
+
+            Path(
+                waypoints=[
+                    (cs * 2 + half,     half),
+                    (cs * 2 + half,     sh - cs * 5 + half),
+                    (sw - half,         sh - cs * 5 + half),
+                ],
+                tunnels_in_cells=[(3, 5), (11, 14)],
+                cell_size=cs
+            ),
+        ]
+
         self.shooter = Shooter(sw // 2, sh // 2, settings["num_colors"])
 
         self.lives: int = settings["player_lives"]
@@ -863,8 +924,16 @@ class GameModel:
         self.shop: Shop = Shop()
         self._pending_tower_type: str = "normal"
         
+        self.time_clocks: List["TimeClock"] = []
+        self.time_remaining_frames: int = 60 * 30
+        self._clock_spawn_timer: int = 300
+        self._active_clocks: int = 0
+        self._difficulty_tick: int = 0
+
         if mode_type == RoundType.ENDLESS:
             chosen_mode = EndlessMode()
+        elif mode_type == RoundType.TIME_ATTACK:
+            chosen_mode = TimeAttackMode()
         else:
             chosen_mode = CampaignMode()
             
@@ -906,6 +975,14 @@ class GameModel:
             return self.round_manager.mode.get_round_data(next_round, self.settings)
         except (IndexError, Exception):
             return self.round_data
+    
+    @property
+    def is_time_attack(self) -> bool:
+        return self.mode_type == RoundType.TIME_ATTACK
+
+    @property
+    def time_remaining_seconds(self) -> float:
+        return self.time_remaining_frames / 30
 
     def start_next_round(self) -> None:
         self.enemies.clear()
@@ -913,7 +990,7 @@ class GameModel:
         if self.round_manager.start_next_round():
             self.hearts.clear()
             self._hearts_spawned = 0
-            self._heart_spawn_timer = 120
+            self._heart_spawn_timer = 90
             self.state = GameState.PLAYING
             if self.shooter.color_idx >= self.round_data.active_colors:
                 self.shooter.color_idx = 0
@@ -931,7 +1008,8 @@ class GameModel:
             self.state = GameState.CHOOSE
 
     def maybe_spawn_enemy(self) -> None:
-        enemy = self.round_manager.maybe_spawn(len(self.active_paths()))
+        allowed = ["normal", "chameleon", "regenerator"] if self.is_time_attack else None
+        enemy = self.round_manager.maybe_spawn(len(self.active_paths()), allowed=allowed)
         if enemy is not None:
             self.enemies.append(enemy)
 
@@ -942,7 +1020,20 @@ class GameModel:
         if self._heart_spawn_timer > 0:
             return False
 
-        self._heart_spawn_timer = 500
+        self._heart_spawn_timer = random.randint(240, 420)
+        return True
+
+    def maybe_spawn_clock(self) -> bool:
+        self._clock_spawn_timer -= 1
+
+        if self._clock_spawn_timer > 0:
+            return False
+
+        if self._active_clocks >= 2:
+            self._clock_spawn_timer = 60
+            return False
+
+        self._clock_spawn_timer = random.randint(240, 420)
         return True
 
     def place_heart(self, x: float, y: float) -> None:
@@ -952,26 +1043,30 @@ class GameModel:
 
     def active_paths(self) -> List[Path]:
         if self.state == GameState.BUILDING:
-            return self.paths[:self.preview_next_round_data.path_count]
-        return self.paths[:self.round_data.path_count]
+            rd = self.preview_next_round_data
+        else:
+            rd = self.round_data
+        pool = self.paths_dual_tunnel if rd.round_number >= 13 else self.paths
+        return pool[:rd.path_count]
 
     def active_tunnel_count(self) -> int:
         return self.round_data.tunnels
 
     def tunnel_per_path(self) -> List[int]:
         rd = self.preview_next_round_data if self.state == GameState.BUILDING else self.round_data
-        count = rd.tunnels
         paths = self.active_paths()
 
-        allocation = [0] * len(paths)
-
-        for i in range(len(paths)):
-            if count <= 0:
-                break
-            allocation[i] = 1
-            count -= 1
-        
-        return allocation
+        if rd.round_number >= 13:
+            return [len(p.tunnels) for p in paths]
+        else:
+            count = rd.tunnels
+            allocation = [0] * len(paths)
+            for i in range(len(paths)):
+                if count <= 0:
+                    break
+                allocation[i] = 1
+                count -= 1
+            return allocation
     
     def round_complete(self) -> bool:
         return self.round_manager.round_complete(self.enemies)

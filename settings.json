@@ -2,7 +2,7 @@
   "_comment": "Game configuration. Edit values to tune.",
   "enemies_per_round": 8,
   "player_lives": 3,
-  "rounds": 12,
+  "rounds": 14,
   "num_colors": 6,
   "enemy_speed": 0.8,
   "enemy_hp": 1,

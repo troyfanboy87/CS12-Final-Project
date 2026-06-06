@@ -19,6 +19,7 @@ from .model import (
     Saboteur,
     SlowTower,
     SniperBullet,
+    TimeClock,
     Tower,
 )
 
@@ -150,6 +151,10 @@ class InputHandler:
     @staticmethod
     def wants_endless_mode() -> bool:
         return pyxel.btnp(pyxel.KEY_2)
+
+    @staticmethod
+    def wants_time_attack_mode() -> bool:
+        return pyxel.btnp(pyxel.KEY_3)
     
     @staticmethod
     def wants_controls() -> bool:
@@ -167,6 +172,10 @@ class InputHandler:
     @staticmethod
     def wants_back() -> bool:
         return pyxel.btnp(pyxel.KEY_ESCAPE)
+    
+    @staticmethod
+    def wants_leaderboard() -> bool:
+        return pyxel.btnp(pyxel.KEY_L)
 
     @staticmethod
     def fire_held() -> bool:
@@ -310,6 +319,24 @@ class CollisionSystem:
                     lives_gained += 1
                     break
         return lives_gained
+    
+    def resolve_clocks(self, bullets: List[Bullet], clocks: list) -> int:
+        CLOCK_HIT_RADIUS_SQ = 64
+        clocks_hit = 0
+        for b in bullets:
+            if not b.alive:
+                continue
+            for c in clocks:
+                if not c.alive:
+                    continue
+                dx = b.x - c.x
+                dy = b.y - c.y
+                if dx * dx + dy * dy <= CLOCK_HIT_RADIUS_SQ:
+                    b.kill()
+                    c.kill()
+                    clocks_hit += 1
+                    break
+        return clocks_hit
 
 #game controller
 class GameController:
@@ -327,14 +354,11 @@ class GameController:
         self._selected_tower: Optional[Tower] = None
         self._bgm_playing = False
         self._menu_bgm_playing = False
+        self._music_enabled = True
         self._show_controls = False   # toggle for controls overlay on menu
+        self._intro_timer: int = 0
 
     def update(self) -> None:
-        # Start menu BGM on first frame
-        if not self._menu_bgm_playing and not self._bgm_playing:
-            self.sound.start_menu_bgm()
-            self._menu_bgm_playing = True
-
         if self.input.wants_quit():
             pyxel.quit()
         
@@ -351,7 +375,10 @@ class GameController:
         if state == GameState.MENU:
             self._update_menu()
         elif state == GameState.PLAYING:
-            self._update_playing()
+            if self.model.is_time_attack:
+                self._update_time_attack()
+            else:
+                self._update_playing()
         elif state == GameState.PAUSED:
             self._update_paused()
         elif state == GameState.CHOOSE:
@@ -366,8 +393,7 @@ class GameController:
             self._update_endgame()
 
     def _update_menu(self) -> None:
-        # Ensure menu BGM plays when on menu (e.g. after returning from game)
-        if not self._menu_bgm_playing:
+        if self._music_enabled and not self._menu_bgm_playing:
             self.sound.start_menu_bgm()
             self._menu_bgm_playing = True
 
@@ -378,23 +404,34 @@ class GameController:
             self._show_controls = False
             self.model = GameModel(self.settings, mode_type=RoundType.CAMPAIGN)
             self.model.start_next_round()
+            self._intro_timer = 360
             self._ensure_bgm_playing()
 
         elif self.input.wants_endless_mode():
             self._show_controls = False
             self.model = GameModel(self.settings, mode_type=RoundType.ENDLESS)
             self.model.start_next_round()
+            self._intro_timer = 360
             self._ensure_bgm_playing()
         
-        elif pyxel.btnp(pyxel.KEY_L):
+        elif self.input.wants_time_attack_mode():
+            self._show_controls = False
+            self.model = GameModel(self.settings, mode_type=RoundType.TIME_ATTACK)
+            self.model.start_next_round()
+            self._intro_timer = 360
+            self._ensure_bgm_playing()
+        
+        elif self.input.wants_leaderboard():
             self.model.state = GameState.LEADERBOARD
             return
 
-        if self.input.wants_start():
-            self.model.start_next_round()
-            self._ensure_bgm_playing()
-
     def _update_playing(self) -> None:
+        if self._intro_timer > 0:
+            self._intro_timer -= 1
+            if self.input.wants_start():
+                self._intro_timer = 0
+            return
+        
         if self.input.wants_pause():
             self.model.state = GameState.PAUSED
             return
@@ -450,6 +487,55 @@ class GameController:
                 self.model.end_round()
                 if not self.model.is_endless:
                     self._selected_tower = None
+    
+    def _update_time_attack(self) -> None:
+        if self._intro_timer > 0:
+            self._intro_timer -= 1
+            if self.input.wants_start():
+                self._intro_timer = 0
+            return
+        
+        m = self.model
+
+        m.time_remaining_frames -= 1
+        if m.time_remaining_frames <= 0:
+            m.state = GameState.GAME_OVER
+            self.sound.stop_bgm()
+            self._bgm_playing = False
+            return
+
+        m._difficulty_tick += 1
+        if m._difficulty_tick >= 600:
+            m._difficulty_tick = 0
+            m.round_manager.current_round += 1
+            m.round_manager._spawn_timer = 0
+            rd = m.round_manager.mode.get_round_data(
+                m.round_manager.current_round, m.settings
+            )
+            m.round_manager._enemies_to_spawn = max(
+                m.round_manager._enemies_to_spawn, rd.total_enemies
+            )
+
+        m.maybe_spawn_enemy()
+        if m.maybe_spawn_clock():
+            self._try_place_clock()
+
+        self._handle_aim_and_color()
+        if self.input.wants_cycle_special():
+            m.cycle_special()
+        if self._shoot_cd > 0:
+            self._shoot_cd -= 1
+        if self.input.fire_held() and self._shoot_cd == 0:
+            self._fire_player_bullet()
+            self._shoot_cd = self.SHOOT_COOLDOWN_FRAMES
+
+        self._update_bullets()
+        self._update_enemies()
+        self.collisions.resolve(m.bullets, m.enemies)
+        self._update_clocks()
+
+        m.bullets = [b for b in m.bullets if b.alive]
+        m.enemies = [e for e in m.enemies if e.alive]
 
     def _update_choose(self) -> None:
         if self.input.wants_shop():
@@ -510,6 +596,9 @@ class GameController:
     def _update_paused(self):
         if self.input.wants_pause():
             self.model.state = GameState.PLAYING
+        
+        elif self.input.wants_restart():
+            self._restart_from_first_round()
 
     def _update_leaderboard(self):
         if self.input.wants_back():
@@ -520,15 +609,27 @@ class GameController:
         self.model.state = GameState.MENU
         self.sound.stop_bgm()
         self._bgm_playing = False
-        self._menu_bgm_playing = False   # will restart on next _update_menu
+        self._menu_bgm_playing = False 
+
         self._selected_tower = None
         self._shoot_cd = 0
         self._show_controls = False
+    
+    def _restart_from_first_round(self) -> None:
+        mode = self.model.mode_type
+        self.model = GameModel(self.settings, mode_type=mode)
+
+        self.model.start_next_round() # start from round 1
+
+        self._selected_tower = None 
+        self._shoot_cd = 0
+
+        self._ensure_bgm_playing()
 
     def _save_score(self):
         score = self.model.exp
         name  = self.model.player_name.strip() or "AAA"
-        mode  = "endless" if self.model.is_endless else "campaign"
+        mode  = self.model.mode_type.value
 
         # Load all existing entries
         entries = self._load_all_scores()
@@ -579,28 +680,30 @@ class GameController:
                       key=lambda x: x[2], reverse=True)[:10]
 
     def _ensure_bgm_playing(self) -> None:
-        if not self._bgm_playing:
-            self.sound.start_bgm()
-            self._bgm_playing = True
-            self._menu_bgm_playing = False
+        if not self._music_enabled:
+            return
+
+        self.sound.start_bgm()
+        self._bgm_playing = True
+        self._menu_bgm_playing = False
 
     def _toggle_bgm(self):
-        # If on menu, toggle menu BGM
-        if self.model.state == GameState.MENU:
-            if self._menu_bgm_playing:
-                self.sound.stop_bgm()
-                self._menu_bgm_playing = False
-            else:
-                self.sound.start_menu_bgm()
-                self._menu_bgm_playing = True
-            return
-        # In-game BGM toggle
-        if self._bgm_playing:
+        self._music_enabled = not self._music_enabled
+
+        if not self._music_enabled:
             self.sound.stop_bgm()
+            self._bgm_playing = False
+            self._menu_bgm_playing = False
+            return
+
+        if self.model.state == GameState.MENU:
+            self.sound.start_menu_bgm()
+            self._menu_bgm_playing = True
             self._bgm_playing = False
         else:
             self.sound.start_bgm()
             self._bgm_playing = True
+            self._menu_bgm_playing = False
 
     def _handle_aim_and_color(self) -> None:
         mx, my = self.input.mouse_pos()
@@ -704,19 +807,21 @@ class GameController:
     def _update_enemies(self) -> None:
         tunnels_allowed = self.model.round_data.tunnels > 0
         alloc = self.model.tunnel_per_path()
+        active_paths = self.model.active_paths()
         for e in self.model.enemies:
             if not e.alive and not e.escaped:
                 continue
             
-            if e.path_index >= len(self.model.paths):
+            if e.path_index >= len(active_paths):
                 e.path_index = 0
 
-            path = self.model.paths[e.path_index]
+            path = active_paths[e.path_index]
             active = path.active_tunnels(alloc[e.path_index])
             e.update(path, tunnels_active=tunnels_allowed, active_tunnels=active)
             if e.escaped:
-                self.model.lives -= 1
-                self.sound.life_lost()
+                if not self.model.is_time_attack:
+                    self.model.lives -= 1
+                    self.sound.life_lost()
                 e.escaped = False  
     
     def _update_hearts(self) -> None:
@@ -746,6 +851,47 @@ class GameController:
             if self._is_clear_of_paths(x, y):
                 self.model.place_heart(x, y)
                 return
+
+    def _try_place_clock(self) -> None:
+        cs = self.settings["cell_size"]
+        sw = self.settings["screen_width"]
+        sh = self.settings["screen_height"]
+
+        for _ in range(30):
+            x = random.randint(1, sw // cs - 2) * cs + cs // 2
+            y = random.randint(1, sh // cs - 1) * cs + cs // 2
+
+            if self._is_clear_of_paths(x, y):
+                self.model.time_clocks.append(TimeClock(x, y))
+                self.model._active_clocks += 1
+                return
+
+    def _try_place_clock(self) -> None:
+        cs = self.settings["cell_size"]
+        sw = self.settings["screen_width"]
+        sh = self.settings["screen_height"]
+        for _ in range(30):
+            x = random.randint(1, sw // cs - 2) * cs + cs // 2
+            y = random.randint(1, sh // cs - 1) * cs + cs // 2
+            if self._is_clear_of_paths(x, y):
+                self.model.time_clocks.append(TimeClock(x, y))
+                self.model._active_clocks += 1
+                return
+
+    def _update_clocks(self) -> None:
+        clocks_hit = self.collisions.resolve_clocks(
+            self.model.bullets, self.model.time_clocks
+        )
+        if clocks_hit:
+            self.model.time_remaining_frames += clocks_hit * TimeClock.SECONDS_GRANTED * 30
+            self.sound.shop_buy()
+
+        for c in self.model.time_clocks:
+            if c.alive:
+                c.update()
+
+        self.model.time_clocks = [c for c in self.model.time_clocks if c.alive]
+        self.model._active_clocks = len(self.model.time_clocks)
 
     def _is_clear_of_paths(self, x: float, y: float, min_dist: int = 20) -> bool:
         for path in self.model.active_paths():
