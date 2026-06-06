@@ -505,9 +505,16 @@ class GameController:
             return
 
         m._difficulty_tick += 1
-        if m._difficulty_tick >= 900:
+        if m._difficulty_tick >= 600:
             m._difficulty_tick = 0
             m.round_manager.current_round += 1
+            m.round_manager._spawn_timer = 0
+            rd = m.round_manager.mode.get_round_data(
+                m.round_manager.current_round, m.settings
+            )
+            m.round_manager._enemies_to_spawn = max(
+                m.round_manager._enemies_to_spawn, rd.total_enemies
+            )
 
         m.maybe_spawn_enemy()
         if m.maybe_spawn_clock():

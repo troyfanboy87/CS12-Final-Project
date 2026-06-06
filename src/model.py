@@ -1020,7 +1020,7 @@ class GameModel:
         if self._heart_spawn_timer > 0:
             return False
 
-        self._heart_spawn_timer = 500
+        self._heart_spawn_timer = random.randint(240, 420)
         return True
 
     def maybe_spawn_clock(self) -> bool:
