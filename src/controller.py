@@ -167,6 +167,10 @@ class InputHandler:
     @staticmethod
     def wants_back() -> bool:
         return pyxel.btnp(pyxel.KEY_ESCAPE)
+    
+    @staticmethod
+    def wants_leaderboard() -> bool:
+        return pyxel.btnp(pyxel.KEY_L)
 
     @staticmethod
     def fire_held() -> bool:
@@ -386,7 +390,7 @@ class GameController:
             self.model.start_next_round()
             self._ensure_bgm_playing()
         
-        elif pyxel.btnp(pyxel.KEY_L):
+        elif self.input.wants_leaderboard():
             self.model.state = GameState.LEADERBOARD
             return
 
@@ -510,6 +514,9 @@ class GameController:
     def _update_paused(self):
         if self.input.wants_pause():
             self.model.state = GameState.PLAYING
+        
+        elif self.input.wants_restart():
+            self._restart_from_first_round()
 
     def _update_leaderboard(self):
         if self.input.wants_back():
@@ -524,6 +531,17 @@ class GameController:
         self._selected_tower = None
         self._shoot_cd = 0
         self._show_controls = False
+    
+    def _restart_from_first_round(self) -> None:
+        mode = self.model.mode_type
+        self.model = GameModel(self.settings, mode_type=mode)
+
+        self.model.start_next_round() # start from round 1
+
+        self._selected_tower = None 
+        self._shoot_cd = 0
+
+        self._ensure_bgm_playing()
 
     def _save_score(self):
         score = self.model.exp
@@ -704,14 +722,15 @@ class GameController:
     def _update_enemies(self) -> None:
         tunnels_allowed = self.model.round_data.tunnels > 0
         alloc = self.model.tunnel_per_path()
+        active_paths = self.model.active_paths()
         for e in self.model.enemies:
             if not e.alive and not e.escaped:
                 continue
             
-            if e.path_index >= len(self.model.paths):
+            if e.path_index >= len(active_paths):
                 e.path_index = 0
 
-            path = self.model.paths[e.path_index]
+            path = active_paths[e.path_index]
             active = path.active_tunnels(alloc[e.path_index])
             e.update(path, tunnels_active=tunnels_allowed, active_tunnels=active)
             if e.escaped:

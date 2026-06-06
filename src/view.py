@@ -167,6 +167,7 @@ class GameView:
             ("[L] Leaderboard",    7),
             ("[K] Controls",       6),
             ("[M] Toggle Music",   6),
+            ("[Q] Quit Game",      6),
         ]
         pw = 120
         ph = len(panel_items) * 12 + 10
@@ -397,12 +398,13 @@ class GameView:
 
         options = [
             "Resume [P]",
+            "Restart [R]",
             "Back to Menu [ESC]",
             "Quit Game [Q]"
         ]
 
         panel_w = 100
-        panel_h = 50
+        panel_h = 60
         px = sw // 2 - panel_w // 2
         py = sh // 2 - panel_h // 2
 
@@ -723,6 +725,7 @@ class GameView:
 
         self._draw_special_ammo_hud()
 
+        pyxel.text(2, pyxel.height - 32, "~ Ghost", 11)
         pyxel.text(2, pyxel.height - 24, "! Sab",   10)
         pyxel.text(2, pyxel.height - 16, "+ Regen", 11)
         pyxel.text(2, pyxel.height - 8,  "* Cham",  10)

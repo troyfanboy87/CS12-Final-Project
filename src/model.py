@@ -695,7 +695,7 @@ class GameMode(ABC):
 
 class CampaignMode(GameMode):
     _ROUNDS: List[RoundData] = [
-            RoundData(1, 5, 40, 0.0, 2, 1, 0),
+            RoundData(1,  5,  40, 0.0, 2, 1, 0),
             RoundData(2, 8, 38, 0.0, 3, 1, 0, True, False, True),
             RoundData(3, 10, 38, 0.0, 3, 1, 0, True, False, True),
             RoundData(4, 12, 35, 0.0, 4, 1, 0, True, False, True),
@@ -707,6 +707,8 @@ class CampaignMode(GameMode):
             RoundData(10, 18, 30, 0.4, 6, 2, 2, True, True, True),
             RoundData(11, 20, 30, 0.8, 6, 2, 2, True, True, True),
             RoundData(12, 20, 30, 1.0, 6, 2, 2, True, True, True),
+            RoundData(13, 20, 28, 1.0, 6, 2, 2, True, True, True),
+            RoundData(14, 20, 28, 1.0, 6, 2, 2, True, True, True),
         ]
 
     def get_round_data(self, round_number: int, settings: dict) -> RoundData:
@@ -841,6 +843,28 @@ class GameModel:
             ),
         ]
 
+        self.paths_dual_tunnel: List[Path] = [
+            Path(
+                waypoints=[
+                    (half,      path_a_y),
+                    (path_a_x,  path_a_y),
+                    (path_a_x,  sh - half),
+                ],
+                tunnels_in_cells=[(3, 5), (10, 13)],
+                cell_size=cs,
+            ),
+
+            Path(
+                waypoints=[
+                    (cs * 2 + half,     half),
+                    (cs * 2 + half,     sh - cs * 5 + half),
+                    (sw - half,         sh - cs * 5 + half),
+                ],
+                tunnels_in_cells=[(3, 5), (11, 14)],
+                cell_size=cs
+            ),
+        ]
+
         self.shooter = Shooter(sw // 2, sh // 2, settings["num_colors"])
 
         self.lives: int = settings["player_lives"]
@@ -913,7 +937,7 @@ class GameModel:
         if self.round_manager.start_next_round():
             self.hearts.clear()
             self._hearts_spawned = 0
-            self._heart_spawn_timer = 120
+            self._heart_spawn_timer = 90
             self.state = GameState.PLAYING
             if self.shooter.color_idx >= self.round_data.active_colors:
                 self.shooter.color_idx = 0
@@ -952,26 +976,30 @@ class GameModel:
 
     def active_paths(self) -> List[Path]:
         if self.state == GameState.BUILDING:
-            return self.paths[:self.preview_next_round_data.path_count]
-        return self.paths[:self.round_data.path_count]
+            rd = self.preview_next_round_data
+        else:
+            rd = self.round_data
+        pool = self.paths_dual_tunnel if rd.round_number >= 13 else self.paths
+        return pool[:rd.path_count]
 
     def active_tunnel_count(self) -> int:
         return self.round_data.tunnels
 
     def tunnel_per_path(self) -> List[int]:
         rd = self.preview_next_round_data if self.state == GameState.BUILDING else self.round_data
-        count = rd.tunnels
         paths = self.active_paths()
 
-        allocation = [0] * len(paths)
-
-        for i in range(len(paths)):
-            if count <= 0:
-                break
-            allocation[i] = 1
-            count -= 1
-        
-        return allocation
+        if rd.round_number >= 13:
+            return [len(p.tunnels) for p in paths]
+        else:
+            count = rd.tunnels
+            allocation = [0] * len(paths)
+            for i in range(len(paths)):
+                if count <= 0:
+                    break
+                allocation[i] = 1
+                count -= 1
+            return allocation
     
     def round_complete(self) -> bool:
         return self.round_manager.round_complete(self.enemies)
